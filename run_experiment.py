@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-from matplotlib.ticker import PercentFormatter
 import numpy as np
 import pandas as pd
 
@@ -29,8 +28,7 @@ def ensure_output_dirs() -> None:
     FIGURE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def clean_figure_output() -> None:
-    """Remove old PNG figures so each run leaves only the current six reports."""
+def clear_old_figures() -> None:
     for path in FIGURE_DIR.glob("*.png"):
         path.unlink()
 
@@ -118,146 +116,100 @@ def run_experiment() -> tuple[pd.DataFrame, pd.DataFrame]:
     return raw, summary
 
 
-def configure_x_axis(ax: plt.Axes) -> None:
-    ax.set_xlabel("Number of Robots")
-    ax.set_xticks(ROBOT_COUNTS)
-    ax.tick_params(axis="x", labelrotation=45, labelsize=8)
-    ax.grid(True, alpha=0.25)
-
-
-def plot_rate_metric(
-    ax: plt.Axes,
-    data: pd.DataFrame,
+def plot_metric(
+    summary: pd.DataFrame,
+    *,
     metric: str,
-    title: str,
     ylabel: str,
+    title: str,
+    filename: str,
+    percent_y: bool = False,
+    reference_lines: bool = False,
 ) -> None:
-    ax.plot(
-        data["robots"],
-        data[metric],
-        marker="o",
-        linewidth=2.0,
-        markersize=4.5,
-    )
-    ax.set_title(title)
-    ax.set_ylabel(ylabel)
-    ax.set_ylim(0.0, 1.02)
-    ax.yaxis.set_major_formatter(PercentFormatter(1.0))
-    configure_x_axis(ax)
+    plt.figure(figsize=(10, 6))
+
+    for loss_rate in LOSS_RATES:
+        data = summary[summary["loss_rate"] == loss_rate]
+        plt.plot(
+            data["robots"],
+            data[metric],
+            marker="o",
+            linewidth=1.8,
+            markersize=4,
+            label=f"Loss = {loss_rate:.0%}",
+        )
+
+        if reference_lines:
+            plt.axhline(
+                loss_rate,
+                linewidth=0.8,
+                linestyle="--",
+                alpha=0.25,
+            )
+
+    plt.xlabel("Number of Robots")
+    plt.ylabel(ylabel)
+    plt.title(title)
+    plt.xticks(ROBOT_COUNTS)
+    plt.grid(True, alpha=0.3)
+    plt.legend(ncol=2)
+
+    if percent_y:
+        from matplotlib.ticker import PercentFormatter
+
+        plt.gca().yaxis.set_major_formatter(PercentFormatter(1.0))
+        plt.ylim(0.0, 1.02)
+
+    plt.tight_layout()
+    plt.savefig(FIGURE_DIR / filename, dpi=200, bbox_inches="tight")
+    plt.close()
 
 
-def plot_regret_metric(ax: plt.Axes, data: pd.DataFrame) -> None:
-    ax.plot(
-        data["robots"],
-        data["average_regret"],
-        marker="o",
-        linewidth=2.0,
-        markersize=4.5,
-    )
-    ax.set_title("Average Regret")
-    ax.set_ylabel("Cost Units")
-    ax.set_ylim(bottom=0.0)
-    configure_x_axis(ax)
-
-
-def build_summary_text(data: pd.DataFrame, loss_rate: float) -> str:
-    observed_loss = float(data["average_observed_loss_rate"].mean())
-    mean_wpr = float(data["winner_preservation_rate"].mean())
-    mean_optimal = float(data["optimal_win_rate"].mean())
-    mean_regret = float(data["average_regret"].mean())
-    mean_tie = float(data["tie_rate"].mean())
-    mean_no_decision = float(data["no_decision_rate"].mean())
-
-    return (
-        f"Configured packet loss: {loss_rate:.0%}    |    "
-        f"Observed mean loss: {observed_loss:.2%}    |    "
-        f"Trials per team size: {TRIALS}    |    "
-        f"Robots: {ROBOT_COUNTS[0]}-{ROBOT_COUNTS[-1]} (step 5)\n"
-        f"Single task    |    Cost: C_i = {COST_START:g} + {COST_STEP:g}(i-1)    |    "
-        f"Voting weight: w_i = (1/C_i)^alpha    |    alpha = {ALPHA:g}    |    seed = {RANDOM_SEED}\n"
-        f"Mean across all team sizes -> "
-        f"Winner preservation: {mean_wpr:.1%}    |    "
-        f"Optimal win: {mean_optimal:.1%}    |    "
-        f"Regret: {mean_regret:.2f}    |    "
-        f"Tie: {mean_tie:.1%}    |    "
-        f"No decision: {mean_no_decision:.1%}"
-    )
-
-
-def generate_loss_summary_figure(summary: pd.DataFrame, loss_rate: float) -> Path:
-    data = (
-        summary[summary["loss_rate"] == loss_rate]
-        .sort_values("robots")
-        .reset_index(drop=True)
-    )
-
-    fig, axes = plt.subplots(2, 2, figsize=(15, 10.5))
-
-    plot_rate_metric(
-        axes[0, 0],
-        data,
+def generate_figures(summary: pd.DataFrame) -> None:
+    plot_metric(
+        summary,
         metric="winner_preservation_rate",
-        title="Winner Preservation Rate",
-        ylabel="Preservation Rate",
+        ylabel="Winner Preservation Rate",
+        title="Winner Preservation vs. Robot Team Size",
+        filename="winner_preservation_rate.png",
+        percent_y=True,
     )
 
-    plot_rate_metric(
-        axes[0, 1],
-        data,
+    plot_metric(
+        summary,
         metric="optimal_win_rate",
-        title="Optimal Win Rate",
-        ylabel="Optimal Selection Rate",
+        ylabel="Optimal Win Rate",
+        title="Minimum-Cost Robot Selection vs. Robot Team Size",
+        filename="optimal_win_rate.png",
+        percent_y=True,
     )
 
-    plot_regret_metric(axes[1, 0], data)
+    plot_metric(
+        summary,
+        metric="average_regret",
+        ylabel="Average Regret (Cost Units)",
+        title="Average Cost Regret vs. Robot Team Size",
+        filename="average_regret.png",
+    )
 
-    plot_rate_metric(
-        axes[1, 1],
-        data,
+    plot_metric(
+        summary,
         metric="tie_rate",
-        title="Tie Rate",
         ylabel="Tie Rate",
+        title="Voting Tie Rate vs. Robot Team Size",
+        filename="tie_rate.png",
+        percent_y=True,
     )
 
-    fig.suptitle(
-        f"Voting-MRTA Performance under {loss_rate:.0%} Packet Loss",
-        fontsize=17,
-        y=0.985,
+    plot_metric(
+        summary,
+        metric="average_observed_loss_rate",
+        ylabel="Observed Packet Loss Rate",
+        title="Packet Loss Simulation Validation",
+        filename="packet_loss_validation.png",
+        percent_y=True,
+        reference_lines=True,
     )
-
-    summary_text = build_summary_text(data, loss_rate)
-    fig.text(
-        0.5,
-        0.018,
-        summary_text,
-        ha="center",
-        va="bottom",
-        fontsize=9.5,
-        linespacing=1.45,
-        bbox={
-            "boxstyle": "round,pad=0.7",
-            "facecolor": "white",
-            "edgecolor": "0.75",
-            "alpha": 0.95,
-        },
-    )
-
-    fig.tight_layout(rect=[0.025, 0.13, 0.975, 0.95], h_pad=2.0, w_pad=1.6)
-
-    loss_percent = int(round(loss_rate * 100))
-    output_path = FIGURE_DIR / f"loss_{loss_percent:02d}_summary.png"
-    fig.savefig(output_path, dpi=220, bbox_inches="tight")
-    plt.close(fig)
-
-    return output_path
-
-
-def generate_figures(summary: pd.DataFrame) -> list[Path]:
-    clean_figure_output()
-    return [
-        generate_loss_summary_figure(summary, loss_rate)
-        for loss_rate in LOSS_RATES
-    ]
 
 
 def print_summary(summary: pd.DataFrame) -> None:
@@ -276,6 +228,7 @@ def print_summary(summary: pd.DataFrame) -> None:
 
 def main() -> None:
     ensure_output_dirs()
+    clear_old_figures()
     raw, summary = run_experiment()
 
     raw_path = DATA_DIR / "raw_results.csv"
@@ -283,13 +236,13 @@ def main() -> None:
 
     raw.to_csv(raw_path, index=False)
     summary.to_csv(summary_path, index=False)
-    figure_paths = generate_figures(summary)
+    generate_figures(summary)
     print_summary(summary)
 
     print("\nGenerated files:")
     print(f"  {raw_path.relative_to(ROOT)}")
     print(f"  {summary_path.relative_to(ROOT)}")
-    for path in figure_paths:
+    for path in sorted(FIGURE_DIR.glob("*.png")):
         print(f"  {path.relative_to(ROOT)}")
 
 
