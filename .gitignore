@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.DS_Store
+.pytest_cache/
+
+# Generated experiment outputs
+results/data/*.csv
+results/figures/*.png
