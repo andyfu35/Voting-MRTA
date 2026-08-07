@@ -62,28 +62,54 @@ For a configured packet-loss probability `q`, each vote is independently deliver
    Fraction of trials in which the highest received vote count is shared by multiple robots before tie-breaking.
 
 5. **Packet Loss Validation**  
-   The observed dropped-vote fraction, used to verify the simulator matches the configured loss rate.
+   The observed dropped-vote fraction is included in each figure's experiment summary so the configured loss rate can be checked against the simulated result.
 
 ## Generated figures
 
-Running the experiment generates:
+The figures are grouped by **packet-loss rate**, not by metric. Running the experiment generates exactly six comprehensive report figures:
 
 ```text
-results/figures/winner_preservation_rate.png
-results/figures/optimal_win_rate.png
-results/figures/average_regret.png
-results/figures/tie_rate.png
-results/figures/packet_loss_validation.png
+results/figures/loss_05_summary.png
+results/figures/loss_10_summary.png
+results/figures/loss_15_summary.png
+results/figures/loss_20_summary.png
+results/figures/loss_25_summary.png
+results/figures/loss_30_summary.png
 ```
 
-It also generates:
+Each figure is self-contained and shows the behavior of Voting-MRTA from 5 to 100 robots under one fixed packet-loss rate.
+
+Every figure contains four curves:
+
+1. Winner Preservation Rate vs. Number of Robots
+2. Optimal Win Rate vs. Number of Robots
+3. Average Regret vs. Number of Robots
+4. Tie Rate vs. Number of Robots
+
+A summary box at the bottom also records:
+
+- configured packet-loss rate
+- observed average packet-loss rate
+- number of trials
+- robot-count range
+- fixed cost model
+- voting-weight model
+- `alpha`
+- random seed
+- mean Winner Preservation Rate
+- mean Optimal Win Rate
+- mean Average Regret
+- mean Tie Rate
+- mean No-Decision Rate
+
+Old PNG files in `results/figures/` are removed automatically when the experiment is rerun, so the output directory contains only the current six report figures.
+
+The experiment also generates:
 
 ```text
 results/data/raw_results.csv
 results/data/summary_results.csv
 ```
-
-Each result figure uses robot count on the x-axis and one curve for each communication-loss rate.
 
 ## Run locally
 
@@ -114,7 +140,7 @@ The demo prints robot costs, voting probabilities, every ballot, whether that ba
 
 ## GitHub Actions
 
-A workflow is included under `.github/workflows/run-experiment.yml`. It runs the simulation and uploads the generated CSV files and PNG figures as a workflow artifact.
+A workflow is included under `.github/workflows/run-experiment.yml`. It runs the simulation and uploads the generated CSV files and six PNG report figures as a workflow artifact.
 
 ## Current scope
 
