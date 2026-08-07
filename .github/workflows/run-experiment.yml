@@ -1,0 +1,45 @@
+name: Run Voting-MRTA Experiment
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  experiment:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run experiment
+        run: python run_experiment.py
+
+      - name: Verify generated outputs
+        run: |
+          test -f results/data/raw_results.csv
+          test -f results/data/summary_results.csv
+          test -f results/figures/winner_preservation_rate.png
+          test -f results/figures/optimal_win_rate.png
+          test -f results/figures/average_regret.png
+          test -f results/figures/tie_rate.png
+          test -f results/figures/packet_loss_validation.png
+
+      - name: Upload experiment results
+        uses: actions/upload-artifact@v4
+        with:
+          name: voting-mrta-results
+          path: |
+            results/data/*.csv
+            results/figures/*.png
+          if-no-files-found: error
