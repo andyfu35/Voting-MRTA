@@ -15,6 +15,7 @@ class FullRound:
     full_tie: bool
     tie_priority: np.ndarray
     delivery_random: np.ndarray
+    active_robots: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -93,19 +94,40 @@ def generate_full_round(
     cost_start: float = 10.0,
     cost_step: float = 5.0,
     alpha: float = 1.0,
+    active_robots: np.ndarray | None = None,
 ) -> FullRound:
-    """Generate one complete voting round before communication loss is applied."""
-    costs = generate_costs(n, cost_start=cost_start, cost_step=cost_step)
-    probabilities = cost_to_probability(costs, alpha=alpha)
+    """Generate one complete voting round before communication loss is applied.
 
-    ballots = rng.choice(n, size=n, p=probabilities)
-    full_counts = np.bincount(ballots, minlength=n)
+    ``active_robots`` can disable permanently failed robots. Failed robots do not
+    cast votes and receive zero candidate probability, so they cannot win the
+    task. When omitted, all robots are active and behavior matches the original
+    experiment.
+    """
+    costs = generate_costs(n, cost_start=cost_start, cost_step=cost_step)
+
+    if active_robots is None:
+        active = np.ones(n, dtype=bool)
+    else:
+        active = np.asarray(active_robots, dtype=bool)
+        if active.shape != (n,):
+            raise ValueError("active_robots must have shape (n,)")
+        if not active.any():
+            raise ValueError("at least one robot must be active")
+
+    base_probabilities = cost_to_probability(costs, alpha=alpha)
+    probabilities = np.where(active, base_probabilities, 0.0)
+    probabilities = probabilities / probabilities.sum()
+
+    ballots = np.full(n, -1, dtype=int)
+    active_count = int(active.sum())
+    ballots[active] = rng.choice(n, size=active_count, p=probabilities)
+    full_counts = np.bincount(ballots[active], minlength=n)
 
     # A fixed random priority avoids systematic Robot-ID bias when counts tie.
     tie_priority = rng.random(n)
     full_winner, full_tie = get_winner(full_counts, tie_priority)
     if full_winner is None:
-        raise RuntimeError("a complete round with n > 0 must have a winner")
+        raise RuntimeError("a complete round with an active robot must have a winner")
 
     # Reusing these random numbers across loss rates makes each higher loss rate
     # a degraded version of the same underlying communication realization.
@@ -120,15 +142,19 @@ def generate_full_round(
         full_tie=full_tie,
         tie_priority=tie_priority,
         delivery_random=delivery_random,
+        active_robots=active,
     )
 
 
 def apply_vote_loss(round_data: FullRound, loss_rate: float) -> LossResult:
-    """Drop vote messages independently using a Bernoulli packet-loss model."""
+    """Drop active-robot vote messages using a Bernoulli packet-loss model."""
     if not 0.0 <= loss_rate <= 1.0:
         raise ValueError("loss_rate must be between 0 and 1")
 
-    delivered = round_data.delivery_random >= loss_rate
+    delivered = (
+        (round_data.delivery_random >= loss_rate)
+        & round_data.active_robots
+    )
     received_ballots = round_data.ballots[delivered]
 
     received_counts = np.bincount(
@@ -152,13 +178,12 @@ def apply_vote_retransmission(
     loss_rate: float,
     max_attempts: int,
 ) -> RetransmissionResult:
-    """Apply stop-on-success vote retransmission under independent packet loss.
+    """Apply stop-on-success retransmission under independent packet loss.
 
-    ``attempt_random`` must have shape ``(available_attempts, number_of_robots)``.
-    Row 0 is the first transmission attempt, row 1 is the first retry, and so on.
-    The terminal counts at most one vote from each robot even if a packet could be
-    delivered more than once. ``attempts_used`` records how many transmissions
-    were required before success, or ``max_attempts`` when every attempt failed.
+    Permanently failed robots from ``round_data.active_robots`` never transmit.
+    Active robots retry the same vote until one attempt succeeds or the maximum
+    number of attempts is reached. The terminal counts at most one vote per
+    active robot.
     """
     if not 0.0 <= loss_rate <= 1.0:
         raise ValueError("loss_rate must be between 0 and 1")
@@ -177,13 +202,17 @@ def apply_vote_retransmission(
     if np.any((attempt_random < 0.0) | (attempt_random >= 1.0)):
         raise ValueError("attempt_random values must be in [0, 1)")
 
+    active = round_data.active_robots
     successes = attempt_random[:max_attempts] >= loss_rate
-    delivered = successes.any(axis=0)
+    delivered = successes.any(axis=0) & active
 
     # np.argmax returns 0 for an all-False column, so only use it for delivered
-    # votes and cap failed votes at max_attempts.
+    # votes. Failed robots use zero transmissions; active all-failed votes use
+    # the configured maximum attempt count.
     first_success = np.argmax(successes, axis=0) + 1
-    attempts_used = np.where(delivered, first_success, max_attempts).astype(int)
+    attempts_used = np.zeros(n, dtype=int)
+    attempts_used[active] = max_attempts
+    attempts_used[delivered] = first_success[delivered]
 
     received_ballots = round_data.ballots[delivered]
     received_counts = np.bincount(
