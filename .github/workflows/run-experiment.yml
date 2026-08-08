@@ -22,8 +22,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run experiment
+      - name: Run packet-loss experiment
         run: python run_experiment.py
+
+      - name: Run retransmission experiment
+        run: python run_retransmission_experiment.py
 
       - name: Verify generated outputs
         run: |
@@ -34,6 +37,15 @@ jobs:
           test -f results/figures/average_regret.png
           test -f results/figures/tie_rate.png
           test -f results/figures/packet_loss_validation.png
+          test -f results/retransmission/data/retransmission_raw_results.csv
+          test -f results/retransmission/data/retransmission_summary_results.csv
+          test -f results/retransmission/data/retransmission_by_attempt.csv
+          test -f results/retransmission/figures/retransmission_winner_preservation_rate.png
+          test -f results/retransmission/figures/retransmission_optimal_win_rate.png
+          test -f results/retransmission/figures/retransmission_average_regret.png
+          test -f results/retransmission/figures/retransmission_tie_rate.png
+          test -f results/retransmission/figures/retransmission_effective_loss_rate.png
+          test -f results/retransmission/figures/retransmission_overhead.png
 
       - name: Upload experiment results
         uses: actions/upload-artifact@v4
@@ -42,4 +54,6 @@ jobs:
           path: |
             results/data/*.csv
             results/figures/*.png
+            results/retransmission/data/*.csv
+            results/retransmission/figures/*.png
           if-no-files-found: error
