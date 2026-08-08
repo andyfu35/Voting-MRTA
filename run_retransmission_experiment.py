@@ -18,6 +18,7 @@ ROBOT_COUNTS = list(range(5, 101, 5))
 MAX_ATTEMPT_VALUES = list(range(1, 11))
 TRIALS = 100
 LOSS_RATE = 0.30
+ROBOT_FAILURE_RATE = 0.05
 
 COST_START = 10.0
 COST_STEP = 5.0
@@ -40,6 +41,14 @@ def clear_old_outputs() -> None:
         path.unlink()
 
 
+def sample_active_robots(n: int, rng: np.random.Generator) -> np.ndarray:
+    """Sample 5% permanent robot failures while keeping at least one robot alive."""
+    while True:
+        active = rng.random(n) >= ROBOT_FAILURE_RATE
+        if active.any():
+            return active
+
+
 def run_experiment() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     rng = np.random.default_rng(RANDOM_SEED)
     records: list[dict[str, object]] = []
@@ -47,23 +56,33 @@ def run_experiment() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 
     print(
         "Running retransmission experiment: "
-        f"loss={LOSS_RATE:.0%}, robots={ROBOT_COUNTS[0]}-{ROBOT_COUNTS[-1]}, "
+        f"robot failure={ROBOT_FAILURE_RATE:.0%}, loss={LOSS_RATE:.0%}, "
+        f"robots={ROBOT_COUNTS[0]}-{ROBOT_COUNTS[-1]}, "
         f"max attempts={MAX_ATTEMPT_VALUES[0]}-{MAX_ATTEMPT_VALUES[-1]}, "
         f"trials={TRIALS}"
     )
 
     for n in ROBOT_COUNTS:
         costs = generate_costs(n, cost_start=COST_START, cost_step=COST_STEP)
-        optimal_robot = int(np.argmin(costs))
-        optimal_cost = float(costs[optimal_robot])
 
         for trial in range(TRIALS):
+            active = sample_active_robots(n, rng)
+            active_indices = np.flatnonzero(active)
+            failed_count = n - int(active.sum())
+            active_count = int(active.sum())
+
+            optimal_robot = int(
+                active_indices[np.argmin(costs[active_indices])]
+            )
+            optimal_cost = float(costs[optimal_robot])
+
             round_data = generate_full_round(
                 n,
                 rng,
                 cost_start=COST_START,
                 cost_step=COST_STEP,
                 alpha=ALPHA,
+                active_robots=active,
             )
 
             # One shared attempt matrix makes max_attempts=1..10 nested versions
@@ -93,16 +112,24 @@ def run_experiment() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
                     regret = winner_cost - optimal_cost
 
                 delivered_votes = int(result.delivered.sum())
-                dropped_votes = n - delivered_votes
+                undelivered_active_votes = active_count - delivered_votes
                 total_transmissions = int(result.attempts_used.sum())
 
                 records.append(
                     {
                         "robots": n,
                         "trial": trial + 1,
+                        "robot_failure_rate": ROBOT_FAILURE_RATE,
+                        "observed_robot_failure_rate": failed_count / n,
+                        "active_robots": active_count,
+                        "failed_robots": failed_count,
                         "loss_rate": LOSS_RATE,
                         "max_attempts": max_attempts,
                         "theoretical_effective_loss_rate": LOSS_RATE**max_attempts,
+                        "theoretical_total_unavailable_rate": (
+                            ROBOT_FAILURE_RATE
+                            + (1.0 - ROBOT_FAILURE_RATE) * LOSS_RATE**max_attempts
+                        ),
                         "alpha": ALPHA,
                         "optimal_robot": optimal_robot + 1,
                         "optimal_cost": optimal_cost,
@@ -115,10 +142,18 @@ def run_experiment() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
                         "no_decision": no_decision,
                         "regret": regret,
                         "delivered_votes": delivered_votes,
-                        "dropped_votes": dropped_votes,
-                        "observed_effective_loss_rate": dropped_votes / n,
+                        "undelivered_active_votes": undelivered_active_votes,
+                        "observed_effective_loss_rate": (
+                            undelivered_active_votes / active_count
+                        ),
+                        "observed_total_unavailable_rate": (
+                            failed_count + undelivered_active_votes
+                        ) / n,
                         "total_transmissions": total_transmissions,
-                        "average_attempts_per_vote": total_transmissions / n,
+                        "average_attempts_per_active_vote": (
+                            total_transmissions / active_count
+                        ),
+                        "average_attempts_per_robot": total_transmissions / n,
                     }
                 )
 
@@ -127,13 +162,17 @@ def run_experiment() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     summary = (
         raw.groupby(["robots", "max_attempts"], as_index=False)
         .agg(
+            observed_robot_failure_rate=("observed_robot_failure_rate", "mean"),
+            average_active_robots=("active_robots", "mean"),
             winner_preservation_rate=("winner_preserved", "mean"),
             optimal_win_rate=("lossy_is_optimal", "mean"),
             average_regret=("regret", "mean"),
             tie_rate=("lossy_tie", "mean"),
             no_decision_rate=("no_decision", "mean"),
             observed_effective_loss_rate=("observed_effective_loss_rate", "mean"),
-            average_attempts_per_vote=("average_attempts_per_vote", "mean"),
+            observed_total_unavailable_rate=("observed_total_unavailable_rate", "mean"),
+            average_attempts_per_active_vote=("average_attempts_per_active_vote", "mean"),
+            average_attempts_per_robot=("average_attempts_per_robot", "mean"),
             average_total_transmissions=("total_transmissions", "mean"),
         )
         .sort_values(["max_attempts", "robots"])
@@ -143,17 +182,25 @@ def run_experiment() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         LOSS_RATE,
         summary["max_attempts"],
     )
+    summary["theoretical_total_unavailable_rate"] = (
+        ROBOT_FAILURE_RATE
+        + (1.0 - ROBOT_FAILURE_RATE)
+        * summary["theoretical_effective_loss_rate"]
+    )
 
     by_attempt = (
         summary.groupby("max_attempts", as_index=False)
         .agg(
+            observed_robot_failure_rate=("observed_robot_failure_rate", "mean"),
             winner_preservation_rate=("winner_preservation_rate", "mean"),
             optimal_win_rate=("optimal_win_rate", "mean"),
             average_regret=("average_regret", "mean"),
             tie_rate=("tie_rate", "mean"),
             no_decision_rate=("no_decision_rate", "mean"),
             observed_effective_loss_rate=("observed_effective_loss_rate", "mean"),
-            average_attempts_per_vote=("average_attempts_per_vote", "mean"),
+            observed_total_unavailable_rate=("observed_total_unavailable_rate", "mean"),
+            average_attempts_per_active_vote=("average_attempts_per_active_vote", "mean"),
+            average_attempts_per_robot=("average_attempts_per_robot", "mean"),
         )
         .sort_values("max_attempts")
         .reset_index(drop=True)
@@ -161,6 +208,11 @@ def run_experiment() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     by_attempt["theoretical_effective_loss_rate"] = np.power(
         LOSS_RATE,
         by_attempt["max_attempts"],
+    )
+    by_attempt["theoretical_total_unavailable_rate"] = (
+        ROBOT_FAILURE_RATE
+        + (1.0 - ROBOT_FAILURE_RATE)
+        * by_attempt["theoretical_effective_loss_rate"]
     )
 
     return raw, summary, by_attempt
@@ -190,7 +242,10 @@ def plot_robot_scale_metric(
 
     ax.set_xlabel("Number of Robots")
     ax.set_ylabel(ylabel)
-    ax.set_title(f"{title} at {LOSS_RATE:.0%} Packet Loss")
+    ax.set_title(
+        f"{title} at {LOSS_RATE:.0%} Packet Loss + "
+        f"{ROBOT_FAILURE_RATE:.0%} Permanent Robot Failure"
+    )
     ax.set_xticks(ROBOT_COUNTS)
     ax.tick_params(axis="x", labelrotation=45)
     ax.grid(True, alpha=0.3)
@@ -206,13 +261,13 @@ def plot_robot_scale_metric(
 
 
 def plot_effective_loss(by_attempt: pd.DataFrame) -> None:
-    fig, ax = plt.subplots(figsize=(9, 5.5))
+    fig, ax = plt.subplots(figsize=(9.5, 5.8))
     ax.plot(
         by_attempt["max_attempts"],
         by_attempt["observed_effective_loss_rate"],
         marker="o",
         linewidth=2.0,
-        label="Observed effective loss",
+        label="Observed packet loss among active robots",
     )
     ax.plot(
         by_attempt["max_attempts"],
@@ -220,16 +275,37 @@ def plot_effective_loss(by_attempt: pd.DataFrame) -> None:
         marker="x",
         linestyle="--",
         linewidth=1.7,
-        label=r"Theory: $0.3^k$",
+        label=r"Packet-loss theory: $0.3^k$",
+    )
+    ax.plot(
+        by_attempt["max_attempts"],
+        by_attempt["observed_total_unavailable_rate"],
+        marker="o",
+        linewidth=2.0,
+        label="Observed total unavailable robots",
+    )
+    ax.plot(
+        by_attempt["max_attempts"],
+        by_attempt["theoretical_total_unavailable_rate"],
+        marker="x",
+        linestyle="--",
+        linewidth=1.7,
+        label="Theory with 5% permanent failure",
+    )
+    ax.axhline(
+        ROBOT_FAILURE_RATE,
+        linestyle=":",
+        linewidth=1.4,
+        label="5% permanent-failure floor",
     )
     ax.set_xlabel("Maximum Transmission Attempts")
-    ax.set_ylabel("Effective Vote Loss Rate")
-    ax.set_title("Retransmission Effect on Effective Vote Loss (30% per Attempt)")
+    ax.set_ylabel("Unavailable Vote / Robot Rate")
+    ax.set_title("Retransmission under 30% Packet Loss and 5% Permanent Failure")
     ax.set_xticks(MAX_ATTEMPT_VALUES)
     ax.yaxis.set_major_formatter(PercentFormatter(1.0))
     ax.set_ylim(bottom=0.0)
     ax.grid(True, alpha=0.3)
-    ax.legend()
+    ax.legend(fontsize=8)
     fig.tight_layout()
     fig.savefig(
         FIGURE_DIR / "retransmission_effective_loss_rate.png",
@@ -243,19 +319,60 @@ def plot_transmission_overhead(by_attempt: pd.DataFrame) -> None:
     fig, ax = plt.subplots(figsize=(9, 5.5))
     ax.plot(
         by_attempt["max_attempts"],
-        by_attempt["average_attempts_per_vote"],
+        by_attempt["average_attempts_per_active_vote"],
         marker="o",
         linewidth=2.0,
     )
     ax.set_xlabel("Maximum Transmission Attempts")
-    ax.set_ylabel("Average Actual Transmissions per Vote")
-    ax.set_title("Communication Overhead of Stop-on-Success Retransmission")
+    ax.set_ylabel("Average Actual Transmissions per Active Vote")
+    ax.set_title(
+        "Communication Overhead of Stop-on-Success Retransmission "
+        "(5% Robots Permanently Failed)"
+    )
     ax.set_xticks(MAX_ATTEMPT_VALUES)
     ax.set_ylim(bottom=1.0)
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     fig.savefig(
         FIGURE_DIR / "retransmission_overhead.png",
+        dpi=220,
+        bbox_inches="tight",
+    )
+    plt.close(fig)
+
+
+def plot_robot_failure_validation(summary: pd.DataFrame) -> None:
+    data = (
+        summary.groupby("robots", as_index=False)["observed_robot_failure_rate"]
+        .mean()
+        .sort_values("robots")
+    )
+    fig, ax = plt.subplots(figsize=(9, 5.5))
+    ax.plot(
+        data["robots"],
+        data["observed_robot_failure_rate"],
+        marker="o",
+        linewidth=2.0,
+        label="Observed failure rate",
+    )
+    ax.axhline(
+        ROBOT_FAILURE_RATE,
+        linestyle="--",
+        linewidth=1.5,
+        label="Configured 5% failure rate",
+    )
+    ax.set_xlabel("Number of Robots")
+    ax.set_ylabel("Permanent Robot Failure Rate")
+    ax.set_title("Permanent Robot Failure Simulation Validation")
+    ax.set_xticks(ROBOT_COUNTS)
+    ax.tick_params(axis="x", labelrotation=45)
+    ax.yaxis.set_major_formatter(PercentFormatter(1.0))
+    ax.set_ylim(bottom=0.0)
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(
+        FIGURE_DIR / "retransmission_robot_failure_validation.png",
         dpi=220,
         bbox_inches="tight",
     )
@@ -275,7 +392,7 @@ def generate_figures(summary: pd.DataFrame, by_attempt: pd.DataFrame) -> None:
         summary,
         metric="optimal_win_rate",
         ylabel="Optimal Win Rate",
-        title="Minimum-Cost Robot Selection vs. Robot Team Size",
+        title="Minimum-Cost Active Robot Selection vs. Robot Team Size",
         filename="retransmission_optimal_win_rate.png",
         percent_y=True,
     )
@@ -296,18 +413,22 @@ def generate_figures(summary: pd.DataFrame, by_attempt: pd.DataFrame) -> None:
     )
     plot_effective_loss(by_attempt)
     plot_transmission_overhead(by_attempt)
+    plot_robot_failure_validation(summary)
 
 
 def print_summary(by_attempt: pd.DataFrame) -> None:
     columns = [
         "max_attempts",
+        "observed_robot_failure_rate",
         "theoretical_effective_loss_rate",
         "observed_effective_loss_rate",
+        "theoretical_total_unavailable_rate",
+        "observed_total_unavailable_rate",
         "winner_preservation_rate",
         "optimal_win_rate",
         "average_regret",
         "tie_rate",
-        "average_attempts_per_vote",
+        "average_attempts_per_active_vote",
     ]
     print("\nRetransmission summary averaged across robot team sizes:")
     print(by_attempt[columns].to_string(index=False))
