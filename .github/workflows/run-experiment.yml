@@ -28,6 +28,9 @@ jobs:
       - name: Run retransmission experiment
         run: python run_retransmission_experiment.py
 
+      - name: Run voting algorithm comparison
+        run: python run_algorithm_experiment.py
+
       - name: Verify generated outputs
         run: |
           test -f results/data/raw_results.csv
@@ -46,6 +49,16 @@ jobs:
           test -f results/retransmission/figures/retransmission_tie_rate.png
           test -f results/retransmission/figures/retransmission_effective_loss_rate.png
           test -f results/retransmission/figures/retransmission_overhead.png
+          test -f results/retransmission/figures/retransmission_robot_failure_validation.png
+          test -f results/algorithms/data/algorithm_raw_results.csv
+          test -f results/algorithms/data/algorithm_summary_results.csv
+          test -f results/algorithms/data/algorithm_by_method.csv
+          test -f results/algorithms/figures/algorithm_optimal_win_rate.png
+          test -f results/algorithms/figures/algorithm_full_vote_optimal_win_rate.png
+          test -f results/algorithms/figures/algorithm_average_regret.png
+          test -f results/algorithms/figures/algorithm_winner_preservation_rate.png
+          test -f results/algorithms/figures/algorithm_tie_rate.png
+          test -f results/algorithms/figures/algorithm_method_summary.png
 
       - name: Upload experiment results
         uses: actions/upload-artifact@v4
@@ -56,4 +69,6 @@ jobs:
             results/figures/*.png
             results/retransmission/data/*.csv
             results/retransmission/figures/*.png
+            results/algorithms/data/*.csv
+            results/algorithms/figures/*.png
           if-no-files-found: error
