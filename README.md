@@ -10,7 +10,7 @@ The experiments intentionally use a simple, controlled single-task setting so co
 - Robot counts: `5, 10, 15, ..., 100`
 - Trials per configuration: `100`
 - Fixed robot costs
-- One vote per robot
+- One vote per active robot
 - Packet loss is applied to the vote -> terminal communication stage
 - Reproducible random seeds
 
@@ -22,7 +22,7 @@ For Robot `i` (1-based index):
 C_i = 10 + 5(i - 1)
 ```
 
-Therefore Robot 1 always has the minimum cost.
+Without robot failure, Robot 1 always has the minimum cost. In the permanent-failure experiment, the optimal robot is instead defined as the minimum-cost robot among the robots that are still active in that trial.
 
 ### Cost-to-vote probability
 
@@ -78,7 +78,7 @@ results/data/raw_results.csv
 results/data/summary_results.csv
 ```
 
-## Experiment 2: retransmission at 30% packet loss
+## Experiment 2: retransmission at 30% packet loss + 5% permanent robot failure
 
 This experiment fixes the packet-loss probability of each individual transmission attempt at:
 
@@ -86,7 +86,23 @@ This experiment fixes the packet-loss probability of each individual transmissio
 30%
 ```
 
-and compares maximum transmission attempts:
+and independently gives every robot a:
+
+```text
+5%
+```
+
+probability of being permanently failed in each trial.
+
+A permanently failed robot:
+
+- does not cast a vote
+- does not transmit or retransmit
+- cannot be selected as the task winner
+
+The minimum-cost **active** robot is used as the optimal reference for that trial.
+
+The experiment compares maximum transmission attempts:
 
 ```text
 1, 2, 3, ..., 10
@@ -94,12 +110,13 @@ and compares maximum transmission attempts:
 
 The model uses **stop-on-success retransmission**:
 
-1. A robot sends its vote.
+1. An active robot sends its vote.
 2. If the packet is delivered, transmission stops for that robot.
 3. If the packet is lost, the same vote is retried until success or the configured maximum attempt count is reached.
-4. The terminal counts at most one vote from each robot, so retransmissions never create duplicate votes.
+4. The terminal counts at most one vote from each active robot, so retransmissions never create duplicate votes.
+5. A permanently failed robot never responds, regardless of the configured retransmission count.
 
-Each transmission attempt is modeled as an independent Bernoulli packet-loss event. Therefore, if the per-attempt loss probability is `p = 0.30`, the theoretical probability that a vote is still lost after `k` maximum attempts is:
+For an active robot, if the per-attempt loss probability is `p = 0.30`, the theoretical probability that its vote is still lost after `k` maximum attempts is:
 
 ```text
 p_effective = 0.30^k
@@ -107,7 +124,7 @@ p_effective = 0.30^k
 
 Examples:
 
-| Max attempts | Theoretical effective loss |
+| Max attempts | Active-robot effective packet loss |
 |---:|---:|
 | 1 | 30% |
 | 2 | 9% |
@@ -119,6 +136,14 @@ Examples:
 | 8 | 0.006561% |
 | 9 | 0.0019683% |
 | 10 | 0.00059049% |
+
+When permanent robot failure is also included, the theoretical total unavailable fraction is:
+
+```text
+p_total_unavailable = 0.05 + 0.95 * (0.30^k)
+```
+
+Therefore retransmission can drive temporary packet loss close to zero, but it cannot remove the approximately 5% floor caused by permanently failed robots.
 
 Within each trial, one shared transmission-attempt random matrix is generated. The 1-attempt through 10-attempt cases are therefore nested versions of exactly the same communication realization, which makes the retry comparison fair.
 
@@ -137,13 +162,16 @@ results/retransmission/figures/retransmission_average_regret.png
 results/retransmission/figures/retransmission_tie_rate.png
 results/retransmission/figures/retransmission_effective_loss_rate.png
 results/retransmission/figures/retransmission_overhead.png
+results/retransmission/figures/retransmission_robot_failure_validation.png
 ```
 
 The first four figures keep robot count on the x-axis and contain ten curves, one for each maximum transmission-attempt setting from 1 to 10.
 
-`retransmission_effective_loss_rate.png` directly compares the observed effective loss rate with the theoretical `0.30^k` curve.
+`retransmission_effective_loss_rate.png` compares temporary packet loss among active robots with the total unavailable-robot rate. The total-unavailable curve approaches the 5% permanent-failure floor as retransmission increases.
 
-`retransmission_overhead.png` shows the average number of actual transmissions required per vote when transmission stops immediately after success. This makes it possible to study the reliability-versus-communication-overhead trade-off.
+`retransmission_overhead.png` shows the average number of actual transmissions required per active vote when transmission stops immediately after success.
+
+`retransmission_robot_failure_validation.png` checks that the simulated permanent robot-failure rate remains close to the configured 5% level.
 
 Generated retransmission data:
 
@@ -155,28 +183,37 @@ results/retransmission/data/retransmission_by_attempt.csv
 
 ### Important interpretation
 
-Retransmission improves **communication reliability**, but it does not automatically make the voting rule mathematically optimal.
+Retransmission improves **temporary communication reliability**, but it cannot recover a permanently failed robot and it does not automatically make the voting rule mathematically optimal.
 
-If packet loss is eliminated, the lossy winner approaches the complete-vote winner, so Winner Preservation Rate should approach 100%. However, if the complete voting process itself chooses a non-minimum-cost robot, retransmitting the same votes cannot correct that decision. This distinction lets the project study communication robustness separately from voting optimality.
+If temporary packet loss is nearly eliminated, Winner Preservation Rate should approach the full-communication result for the same active robot set. However, the approximately 5% permanently failed robots remain unavailable, and the complete voting process can still choose a non-minimum-cost active robot.
+
+This separates three research questions:
+
+1. temporary packet-loss robustness
+2. permanent robot-failure robustness
+3. voting-solution optimality
 
 ## Main metrics
 
 1. **Winner Preservation Rate**  
-   Probability that the winner after communication loss is the same as the winner with all votes delivered.
+   Probability that the winner after communication loss is the same as the winner with all active votes delivered.
 
 2. **Optimal Win Rate**  
-   Probability that the final winner is the minimum-cost robot.
+   Probability that the final winner is the minimum-cost active robot.
 
 3. **Average Regret**  
-   `selected_robot_cost - minimum_cost`.
+   `selected_robot_cost - minimum_active_robot_cost`.
 
 4. **Tie Rate**  
    Fraction of trials in which the highest received vote count is shared by multiple robots before tie-breaking.
 
 5. **Effective Packet Loss Rate**  
-   Fraction of robot votes that remain undelivered after all allowed transmission attempts.
+   Fraction of active robot votes that remain undelivered after all allowed transmission attempts.
 
-6. **Average Actual Transmissions per Vote**  
+6. **Total Unavailable Rate**  
+   Fraction of all robots that are unavailable because they are permanently failed or because an active robot's vote is still lost after all retries.
+
+7. **Average Actual Transmissions per Active Vote**  
    Communication overhead when retransmission stops after the first successful delivery.
 
 ## Run locally
@@ -210,12 +247,10 @@ To see the original single-transmission voting process vote-by-vote:
 python demo_single_vote.py --robots 20 --loss 0.20
 ```
 
-The demo prints robot costs, voting probabilities, every ballot, whether that ballot was delivered or dropped, full vote counts, received vote counts, and both winners.
-
 ## GitHub Actions
 
 The workflow under `.github/workflows/run-experiment.yml` runs both experiments and uploads all generated CSV files and PNG figures as the `voting-mrta-results` workflow artifact.
 
 ## Current scope
 
-The current code isolates **vote-message packet loss and retransmission**. Cost-sharing packet loss, dynamic cost, multiple simultaneous tasks, robot capacity constraints, task reassignment, and heterogeneous multi-algorithm voting are intentionally left for later experiments.
+The current code studies **vote-message packet loss, retransmission, and permanent robot communication failure**. Cost-sharing packet loss, dynamic cost, multiple simultaneous tasks, robot capacity constraints, task reassignment, and heterogeneous multi-algorithm voting are intentionally left for later experiments.
