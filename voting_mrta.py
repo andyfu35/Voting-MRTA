@@ -25,6 +25,15 @@ class LossResult:
     tie: bool
 
 
+@dataclass(frozen=True)
+class RetransmissionResult:
+    delivered: np.ndarray
+    received_counts: np.ndarray
+    winner: int | None
+    tie: bool
+    attempts_used: np.ndarray
+
+
 def generate_costs(
     n: int,
     cost_start: float = 10.0,
@@ -134,4 +143,59 @@ def apply_vote_loss(round_data: FullRound, loss_rate: float) -> LossResult:
         received_counts=received_counts,
         winner=winner,
         tie=tie,
+    )
+
+
+def apply_vote_retransmission(
+    round_data: FullRound,
+    attempt_random: np.ndarray,
+    loss_rate: float,
+    max_attempts: int,
+) -> RetransmissionResult:
+    """Apply stop-on-success vote retransmission under independent packet loss.
+
+    ``attempt_random`` must have shape ``(available_attempts, number_of_robots)``.
+    Row 0 is the first transmission attempt, row 1 is the first retry, and so on.
+    The terminal counts at most one vote from each robot even if a packet could be
+    delivered more than once. ``attempts_used`` records how many transmissions
+    were required before success, or ``max_attempts`` when every attempt failed.
+    """
+    if not 0.0 <= loss_rate <= 1.0:
+        raise ValueError("loss_rate must be between 0 and 1")
+    if max_attempts <= 0:
+        raise ValueError("max_attempts must be positive")
+
+    attempt_random = np.asarray(attempt_random, dtype=float)
+    n = len(round_data.costs)
+
+    if attempt_random.ndim != 2:
+        raise ValueError("attempt_random must be a 2-D array")
+    if attempt_random.shape[1] != n:
+        raise ValueError("attempt_random must have one column per robot")
+    if attempt_random.shape[0] < max_attempts:
+        raise ValueError("attempt_random does not contain enough attempts")
+    if np.any((attempt_random < 0.0) | (attempt_random >= 1.0)):
+        raise ValueError("attempt_random values must be in [0, 1)")
+
+    successes = attempt_random[:max_attempts] >= loss_rate
+    delivered = successes.any(axis=0)
+
+    # np.argmax returns 0 for an all-False column, so only use it for delivered
+    # votes and cap failed votes at max_attempts.
+    first_success = np.argmax(successes, axis=0) + 1
+    attempts_used = np.where(delivered, first_success, max_attempts).astype(int)
+
+    received_ballots = round_data.ballots[delivered]
+    received_counts = np.bincount(
+        received_ballots,
+        minlength=n,
+    )
+    winner, tie = get_winner(received_counts, round_data.tie_priority)
+
+    return RetransmissionResult(
+        delivered=delivered,
+        received_counts=received_counts,
+        winner=winner,
+        tie=tie,
+        attempts_used=attempts_used,
     )
