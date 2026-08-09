@@ -64,8 +64,6 @@ results/figures/tie_rate.png
 results/figures/packet_loss_validation.png
 ```
 
-Each figure uses robot count on the x-axis and contains six curves, one for each communication packet-loss rate.
-
 Generated data:
 
 ```text
@@ -91,21 +89,15 @@ The experiment compares maximum transmission attempts:
 1, 2, 3, ..., 10
 ```
 
-The model uses **stop-on-success retransmission**:
+The model uses **stop-on-success retransmission**. An active robot retries the same vote until one attempt succeeds or the configured maximum attempt count is reached. The terminal counts at most one vote from each active robot.
 
-1. An active robot sends its vote.
-2. If the packet is delivered, transmission stops for that robot.
-3. If the packet is lost, the same vote is retried until success or the configured maximum attempt count is reached.
-4. The terminal counts at most one vote from each active robot, so retransmissions never create duplicate votes.
-5. A permanently failed robot never responds, regardless of the configured retransmission count.
-
-For an active robot, if the per-attempt loss probability is `p = 0.30`, the theoretical probability that its vote is still lost after `k` maximum attempts is:
+For an active robot, if the per-attempt loss probability is `p = 0.30`, the theoretical probability that its vote is still lost after `k` attempts is:
 
 ```text
 p_effective = 0.30^k
 ```
 
-When permanent robot failure is also included, the theoretical total unavailable fraction is:
+With permanent failure included, the theoretical total unavailable fraction is:
 
 ```text
 p_total_unavailable = 0.05 + 0.95 * (0.30^k)
@@ -139,10 +131,6 @@ results/retransmission/data/retransmission_summary_results.csv
 results/retransmission/data/retransmission_by_attempt.csv
 ```
 
-### Important retransmission interpretation
-
-Retransmission improves **temporary communication reliability**, but it cannot recover a permanently failed robot and it does not automatically make the voting rule mathematically optimal.
-
 The current results show that approximately 3-4 maximum transmission attempts already remove most of the temporary packet-loss effect. This motivates fixing the communication settings and studying the voting decision rule separately.
 
 ## Experiment 3: voting algorithm comparison
@@ -156,8 +144,6 @@ Maximum transmission attempts = 3
 Trials per robot count = 100
 ```
 
-The same permanent-failure mask, random vote draws, tie priorities, and transmission outcomes are shared across methods within each trial. This gives a paired comparison under the same underlying conditions.
-
 The following single-algorithm voting strategies are compared:
 
 1. `Inverse alpha=1` - original Voting-MRTA baseline
@@ -166,7 +152,7 @@ The following single-algorithm voting strategies are compared:
 4. `Inverse alpha=4`
 5. `Softmax beta=2`
 6. `Softmax beta=4`
-7. `Greedy` - every active voter selects the minimum-cost active robot
+7. `Greedy`
 
 For inverse-cost voting:
 
@@ -174,20 +160,16 @@ For inverse-cost voting:
 p_i proportional to (1 / C_i)^alpha
 ```
 
-Larger `alpha` gives the lower-cost candidates stronger preference.
-
-For softmax voting, the cost difference from the minimum active cost is divided by a **fixed cost scale** equal to the experiment cost step (`5` cost units):
+For Softmax voting, the cost difference from the minimum active cost is divided by a fixed cost scale equal to the experiment cost step (`5` cost units):
 
 ```text
 scaled_cost_i = (C_i - C_min) / 5
 p_i proportional to exp(-beta * scaled_cost_i)
 ```
 
-Using a fixed scale is important because the voting preference should not become flatter simply because more robots are added. An earlier version normalized by `(C_max - C_min)`, which caused the denominator to grow with robot-team size and artificially weakened Softmax as `N` increased.
+The fixed scale prevents Softmax from becoming artificially flatter when more robots are added.
 
-Larger `beta` gives lower-cost candidates stronger preference while keeping the meaning of the parameter consistent across all robot-team sizes.
-
-`Greedy` is included as an upper-bound baseline for the current single-task setting. Because all active costs are known and only one task is assigned, directly choosing the minimum-cost active robot is mathematically optimal here. This does not imply Greedy will remain globally optimal after the project is extended to multiple tasks and assignment constraints.
+`Greedy` is included as an upper-bound baseline for the current single-task setting. Because all active costs are known and only one task is assigned, directly choosing the minimum-cost active robot is mathematically optimal here.
 
 Run:
 
@@ -214,40 +196,130 @@ results/algorithms/data/algorithm_summary_results.csv
 results/algorithms/data/algorithm_by_method.csv
 ```
 
-The most important comparison is between:
+## Experiment 4: heterogeneous multi-algorithm voting
 
-- **Complete-vote optimal rate**: intrinsic quality of the voting rule before temporary packet loss
-- **Post-communication optimal rate**: final quality after 30% packet loss, 3-attempt retransmission, and 5% permanent robot failure
-- **Average regret**: how costly a non-optimal selection is
-- **Winner preservation**: whether communication changes the complete-vote result
+This experiment directly tests whether combining different local decision rules through final voting can improve the result compared with using one rule everywhere.
 
-This experiment is intended to identify strong single voting rules before building a future **heterogeneous multi-algorithm voting** experiment.
+The communication environment remains fixed:
+
+```text
+Packet loss per attempt = 30%
+Permanent robot failure = 5%
+Maximum transmission attempts = 3
+Trials per robot count = 100
+```
+
+Each active robot is assigned one decision rule. For a multi-algorithm strategy, active voters are randomly ordered and distributed as evenly as possible across the component rules. The assignment is recreated in every trial so algorithm assignment is not tied to Robot ID or cost rank.
+
+All compared strategies in the same trial share:
+
+- the same permanent-failure mask
+- the same random vote draws
+- the same tie priority
+- the same packet-loss/retransmission outcomes
+- the same randomized voter-assignment order
+
+This keeps the comparison paired and isolates the effect of the decision-rule mixture.
+
+### Single-rule baselines
+
+```text
+Single: Inverse alpha=1
+Single: Inverse alpha=2
+Single: Inverse alpha=3
+Single: Softmax beta=0.25
+Single: Softmax beta=0.5
+Single: Greedy
+```
+
+The softer Softmax parameters are used here intentionally. Experiment 3 showed that large beta values are already very close to Greedy, so smaller beta values preserve enough decision diversity to make heterogeneous voting meaningful.
+
+### Multi-algorithm strategies
+
+`Multi Balanced`:
+
+```text
+Inverse alpha=1
++ Inverse alpha=2
++ Softmax beta=0.25
+```
+
+`Multi Strong`:
+
+```text
+Inverse alpha=2
++ Inverse alpha=3
++ Softmax beta=0.5
+```
+
+`Multi Diverse`:
+
+```text
+Inverse alpha=1
++ Softmax beta=0.25
++ Greedy
+```
+
+Each active robot still casts exactly one final vote. The terminal does not know or care which local rule generated that vote; it only aggregates the received votes using the same Voting-MRTA terminal logic.
+
+Run:
+
+```bash
+python run_multi_algorithm_experiment.py
+```
+
+Generated figures:
+
+```text
+results/multi_algorithm/figures/multi_algorithm_optimal_win_rate.png
+results/multi_algorithm/figures/multi_algorithm_average_regret.png
+results/multi_algorithm/figures/multi_algorithm_tie_rate.png
+results/multi_algorithm/figures/multi_algorithm_winner_preservation_rate.png
+results/multi_algorithm/figures/multi_algorithm_strategy_summary.png
+results/multi_algorithm/figures/multi_algorithm_gain_vs_components.png
+```
+
+Generated data:
+
+```text
+results/multi_algorithm/data/multi_algorithm_raw_results.csv
+results/multi_algorithm/data/multi_algorithm_summary_results.csv
+results/multi_algorithm/data/multi_algorithm_by_strategy.csv
+```
+
+The most direct figure for the research question is:
+
+```text
+multi_algorithm_gain_vs_components.png
+```
+
+For every heterogeneous strategy it compares:
+
+1. the mean Optimal Win Rate of its single-rule components
+2. the best Optimal Win Rate among those components
+3. the final Optimal Win Rate after the component rules are mixed across robots and aggregated by voting
+
+The CSV also reports:
+
+```text
+gain_vs_component_mean
+gain_vs_best_component
+```
+
+A positive `gain_vs_component_mean` means heterogeneous voting performs better than the average of its constituent single algorithms. A positive `gain_vs_best_component` is a stronger result: it means the combined vote outperforms even the strongest individual component under the same experiment conditions.
 
 ## Main metrics
 
-1. **Winner Preservation Rate**  
-   Probability that the winner after communication loss is the same as the winner with all active votes delivered.
-
-2. **Optimal Win Rate**  
-   Probability that the final winner is the minimum-cost active robot.
-
-3. **Complete-Vote Optimal Win Rate**  
-   Probability that the voting algorithm chooses the minimum-cost active robot before temporary packet loss is applied.
-
-4. **Average Regret**  
-   `selected_robot_cost - minimum_active_robot_cost`.
-
-5. **Tie Rate**  
-   Fraction of trials in which the highest received vote count is shared by multiple robots before tie-breaking.
-
-6. **Effective Packet Loss Rate**  
-   Fraction of active robot votes that remain undelivered after all allowed transmission attempts.
-
-7. **Total Unavailable Rate**  
-   Fraction of all robots that are unavailable because they are permanently failed or because an active robot's vote is still lost after all retries.
-
-8. **Average Actual Transmissions per Active Vote**  
-   Communication overhead when retransmission stops after the first successful delivery.
+1. **Winner Preservation Rate** - probability that communication loss does not change the complete-vote winner.
+2. **Optimal Win Rate** - probability that the final winner is the minimum-cost active robot.
+3. **Complete-Vote Optimal Win Rate** - intrinsic decision quality before temporary packet loss.
+4. **Average Regret** - `selected_robot_cost - minimum_active_robot_cost`.
+5. **Tie Rate** - fraction of trials with a top-vote tie before tie-breaking.
+6. **Effective Packet Loss Rate** - fraction of active votes still undelivered after all allowed attempts.
+7. **Total Unavailable Rate** - permanent failures plus active votes still lost after retries.
+8. **Average Actual Transmissions per Active Vote** - communication overhead under stop-on-success retransmission.
+9. **Gain vs Component Mean** - multi-algorithm Optimal Win Rate minus the mean of its constituent single-rule rates.
+10. **Gain vs Best Component** - multi-algorithm Optimal Win Rate minus the strongest constituent single-rule rate.
 
 ## Run locally
 
@@ -265,6 +337,7 @@ Run the experiments independently with:
 python run_experiment.py
 python run_retransmission_experiment.py
 python run_algorithm_experiment.py
+python run_multi_algorithm_experiment.py
 ```
 
 On Windows PowerShell, activate the environment with:
@@ -283,8 +356,8 @@ python demo_single_vote.py --robots 20 --loss 0.20
 
 ## GitHub Actions
 
-The workflow under `.github/workflows/run-experiment.yml` runs all three experiments and uploads all generated CSV files and PNG figures as the `voting-mrta-results` workflow artifact.
+The workflow under `.github/workflows/run-experiment.yml` runs all four experiments and uploads all generated CSV files and PNG figures as the `voting-mrta-results` workflow artifact.
 
 ## Current scope
 
-The current code studies **vote-message packet loss, retransmission, permanent robot communication failure, and single voting-algorithm selection quality**. Cost-sharing packet loss, dynamic cost, multiple simultaneous tasks, robot capacity constraints, task reassignment, and heterogeneous multi-algorithm voting are intentionally left for later experiments.
+The current code studies **vote-message packet loss, retransmission, permanent robot communication failure, single-algorithm voting quality, and heterogeneous multi-algorithm voting**. Cost-sharing packet loss, dynamic cost, multiple simultaneous tasks, robot capacity constraints, task reassignment, and multi-task allocation remain future extensions.
