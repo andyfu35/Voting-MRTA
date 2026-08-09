@@ -176,13 +176,16 @@ p_i proportional to (1 / C_i)^alpha
 
 Larger `alpha` gives the lower-cost candidates stronger preference.
 
-For softmax voting, active-robot costs are first normalized within the active candidate set and then converted using:
+For softmax voting, the cost difference from the minimum active cost is divided by a **fixed cost scale** equal to the experiment cost step (`5` cost units):
 
 ```text
-p_i proportional to exp(-beta * normalized_cost_i)
+scaled_cost_i = (C_i - C_min) / 5
+p_i proportional to exp(-beta * scaled_cost_i)
 ```
 
-Larger `beta` gives lower-cost candidates stronger preference.
+Using a fixed scale is important because the voting preference should not become flatter simply because more robots are added. An earlier version normalized by `(C_max - C_min)`, which caused the denominator to grow with robot-team size and artificially weakened Softmax as `N` increased.
+
+Larger `beta` gives lower-cost candidates stronger preference while keeping the meaning of the parameter consistent across all robot-team sizes.
 
 `Greedy` is included as an upper-bound baseline for the current single-task setting. Because all active costs are known and only one task is assigned, directly choosing the minimum-cost active robot is mathematically optimal here. This does not imply Greedy will remain globally optimal after the project is extended to multiple tasks and assignment constraints.
 
