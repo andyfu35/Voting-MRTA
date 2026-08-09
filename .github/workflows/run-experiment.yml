@@ -31,6 +31,9 @@ jobs:
       - name: Run voting algorithm comparison
         run: python run_algorithm_experiment.py
 
+      - name: Run multi-algorithm voting experiment
+        run: python run_multi_algorithm_experiment.py
+
       - name: Verify generated outputs
         run: |
           test -f results/data/raw_results.csv
@@ -59,6 +62,15 @@ jobs:
           test -f results/algorithms/figures/algorithm_winner_preservation_rate.png
           test -f results/algorithms/figures/algorithm_tie_rate.png
           test -f results/algorithms/figures/algorithm_method_summary.png
+          test -f results/multi_algorithm/data/multi_algorithm_raw_results.csv
+          test -f results/multi_algorithm/data/multi_algorithm_summary_results.csv
+          test -f results/multi_algorithm/data/multi_algorithm_by_strategy.csv
+          test -f results/multi_algorithm/figures/multi_algorithm_optimal_win_rate.png
+          test -f results/multi_algorithm/figures/multi_algorithm_average_regret.png
+          test -f results/multi_algorithm/figures/multi_algorithm_tie_rate.png
+          test -f results/multi_algorithm/figures/multi_algorithm_winner_preservation_rate.png
+          test -f results/multi_algorithm/figures/multi_algorithm_strategy_summary.png
+          test -f results/multi_algorithm/figures/multi_algorithm_gain_vs_components.png
 
       - name: Upload experiment results
         uses: actions/upload-artifact@v4
@@ -71,4 +83,6 @@ jobs:
             results/retransmission/figures/*.png
             results/algorithms/data/*.csv
             results/algorithms/figures/*.png
+            results/multi_algorithm/data/*.csv
+            results/multi_algorithm/figures/*.png
           if-no-files-found: error
