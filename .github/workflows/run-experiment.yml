@@ -34,6 +34,9 @@ jobs:
       - name: Run multi-algorithm voting experiment
         run: python run_multi_algorithm_experiment.py
 
+      - name: Run adaptive context-aware voting experiment
+        run: python run_adaptive_voting_experiment.py
+
       - name: Verify generated outputs
         run: |
           test -f results/data/raw_results.csv
@@ -71,6 +74,16 @@ jobs:
           test -f results/multi_algorithm/figures/multi_algorithm_winner_preservation_rate.png
           test -f results/multi_algorithm/figures/multi_algorithm_strategy_summary.png
           test -f results/multi_algorithm/figures/multi_algorithm_gain_vs_components.png
+          test -f results/adaptive/data/adaptive_raw_results.csv
+          test -f results/adaptive/data/adaptive_summary_results.csv
+          test -f results/adaptive/data/adaptive_by_strategy.csv
+          test -f results/adaptive/data/adaptive_expert_weights.csv
+          test -f results/adaptive/figures/adaptive_overall_optimal_win_rate.png
+          test -f results/adaptive/figures/adaptive_average_regret.png
+          test -f results/adaptive/figures/adaptive_by_scenario.png
+          test -f results/adaptive/figures/adaptive_strategy_summary.png
+          test -f results/adaptive/figures/adaptive_expert_weights.png
+          test -f results/adaptive/figures/adaptive_gain_vs_fixed_expert.png
 
       - name: Upload experiment results
         uses: actions/upload-artifact@v4
@@ -85,4 +98,6 @@ jobs:
             results/algorithms/figures/*.png
             results/multi_algorithm/data/*.csv
             results/multi_algorithm/figures/*.png
+            results/adaptive/data/*.csv
+            results/adaptive/figures/*.png
           if-no-files-found: error
