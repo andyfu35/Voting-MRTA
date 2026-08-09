@@ -25,6 +25,7 @@ RANDOM_SEED = 20260809
 
 COST_START = 10.0
 COST_STEP = 5.0
+SOFTMAX_COST_SCALE = COST_STEP
 
 ROOT = Path(__file__).resolve().parent
 RESULT_DIR = ROOT / "results" / "algorithms"
@@ -84,12 +85,13 @@ def method_probabilities(
     elif method.family == "softmax":
         beta = float(method.parameter)
         c_min = float(active_costs.min())
-        c_max = float(active_costs.max())
-        if c_max == c_min:
-            normalized_costs = np.zeros_like(active_costs)
-        else:
-            normalized_costs = (active_costs - c_min) / (c_max - c_min)
-        weights = np.exp(-beta * normalized_costs)
+        # Use a fixed physical cost scale instead of the active-set cost range.
+        # With the old (C - C_min) / (C_max - C_min) normalization, increasing
+        # the number of robots also increased the denominator and made Softmax
+        # artificially flatter. COST_STEP is fixed at 5 cost units, so one
+        # scaled unit always means one robot-to-robot cost step regardless of N.
+        scaled_costs = (active_costs - c_min) / SOFTMAX_COST_SCALE
+        weights = np.exp(-beta * scaled_costs)
     elif method.family == "greedy":
         best_local_index = int(np.argmin(active_costs))
         active_indices = np.flatnonzero(active)
@@ -159,6 +161,7 @@ def run_experiment() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         f"packet loss={PACKET_LOSS_RATE:.0%}, "
         f"permanent failure={ROBOT_FAILURE_RATE:.0%}, "
         f"max attempts={MAX_TRANSMISSION_ATTEMPTS}, "
+        f"softmax cost scale={SOFTMAX_COST_SCALE:g}, "
         f"trials={TRIALS}"
     )
 
@@ -226,6 +229,7 @@ def run_experiment() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
                         "packet_loss_rate": PACKET_LOSS_RATE,
                         "robot_failure_rate": ROBOT_FAILURE_RATE,
                         "max_attempts": MAX_TRANSMISSION_ATTEMPTS,
+                        "softmax_cost_scale": SOFTMAX_COST_SCALE,
                         "active_robots": active_count,
                         "observed_robot_failure_rate": 1.0 - active_count / n,
                         "optimal_robot": optimal_robot + 1,
