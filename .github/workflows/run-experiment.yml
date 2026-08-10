@@ -37,6 +37,9 @@ jobs:
       - name: Run adaptive context-aware voting experiment
         run: python run_adaptive_voting_experiment.py
 
+      - name: Run adaptive near-optimal and top-k quality analysis
+        run: python run_adaptive_quality_analysis.py
+
       - name: Verify generated outputs
         run: |
           test -f results/data/raw_results.csv
@@ -84,6 +87,11 @@ jobs:
           test -f results/adaptive/figures/adaptive_strategy_summary.png
           test -f results/adaptive/figures/adaptive_expert_weights.png
           test -f results/adaptive/figures/adaptive_gain_vs_fixed_expert.png
+          test -f results/adaptive_quality/data/adaptive_quality_raw_results.csv
+          test -f results/adaptive_quality/data/adaptive_quality_summary_results.csv
+          test -f results/adaptive_quality/data/adaptive_quality_by_strategy.csv
+          test -f results/adaptive_quality/figures/adaptive_near_optimal_rate.png
+          test -f results/adaptive_quality/figures/adaptive_top_k_rate.png
 
       - name: Upload experiment results
         uses: actions/upload-artifact@v4
@@ -100,4 +108,6 @@ jobs:
             results/multi_algorithm/figures/*.png
             results/adaptive/data/*.csv
             results/adaptive/figures/*.png
+            results/adaptive_quality/data/*.csv
+            results/adaptive_quality/figures/*.png
           if-no-files-found: error
