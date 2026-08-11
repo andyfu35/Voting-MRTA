@@ -40,6 +40,9 @@ jobs:
       - name: Run adaptive near-optimal and top-k quality analysis
         run: python run_adaptive_quality_analysis.py
 
+      - name: Run constraint-aware multi-task Voting-MRTA experiment
+        run: python run_multitask_experiment.py
+
       - name: Verify generated outputs
         run: |
           test -f results/data/raw_results.csv
@@ -92,6 +95,14 @@ jobs:
           test -f results/adaptive_quality/data/adaptive_quality_by_strategy.csv
           test -f results/adaptive_quality/figures/adaptive_near_optimal_rate.png
           test -f results/adaptive_quality/figures/adaptive_top_k_rate.png
+          test -f results/multitask/data/multitask_raw_results.csv
+          test -f results/multitask/data/multitask_summary_results.csv
+          test -f results/multitask/data/multitask_by_method.csv
+          test -f results/multitask/figures/multitask_optimality_gap.png
+          test -f results/multitask/figures/multitask_near_optimal_rate.png
+          test -f results/multitask/figures/multitask_by_load_ratio.png
+          test -f results/multitask/figures/multitask_independent_conflict_rate.png
+          test -f results/multitask/figures/multitask_method_summary.png
 
       - name: Upload experiment results
         uses: actions/upload-artifact@v4
@@ -110,4 +121,6 @@ jobs:
             results/adaptive/figures/*.png
             results/adaptive_quality/data/*.csv
             results/adaptive_quality/figures/*.png
+            results/multitask/data/*.csv
+            results/multitask/figures/*.png
           if-no-files-found: error
