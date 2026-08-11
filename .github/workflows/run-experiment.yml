@@ -43,6 +43,9 @@ jobs:
       - name: Run constraint-aware multi-task Voting-MRTA experiment
         run: python run_multitask_experiment.py
 
+      - name: Run decentralized quorum Voting-MRTA experiment
+        run: python run_decentralized_experiment.py
+
       - name: Verify generated outputs
         run: |
           test -f results/data/raw_results.csv
@@ -103,6 +106,15 @@ jobs:
           test -f results/multitask/figures/multitask_by_load_ratio.png
           test -f results/multitask/figures/multitask_independent_conflict_rate.png
           test -f results/multitask/figures/multitask_method_summary.png
+          test -f results/decentralized/data/decentralized_raw_results.csv
+          test -f results/decentralized/data/decentralized_summary_results.csv
+          test -f results/decentralized/data/decentralized_by_quorum.csv
+          test -f results/decentralized/figures/decentralized_modal_agreement_rate.png
+          test -f results/decentralized/figures/decentralized_strict_vs_quorum.png
+          test -f results/decentralized/figures/decentralized_safe_commit_rate.png
+          test -f results/decentralized/figures/decentralized_split_brain_rate.png
+          test -f results/decentralized/figures/decentralized_optimality_gap.png
+          test -f results/decentralized/figures/decentralized_message_delivery_rate.png
 
       - name: Upload experiment results
         uses: actions/upload-artifact@v4
@@ -123,4 +135,6 @@ jobs:
             results/adaptive_quality/figures/*.png
             results/multitask/data/*.csv
             results/multitask/figures/*.png
+            results/decentralized/data/*.csv
+            results/decentralized/figures/*.png
           if-no-files-found: error
