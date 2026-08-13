@@ -1,0 +1,47 @@
+name: Run Route Guardrail Experiment
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  route-guardrail:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run route guardrail load-balancing experiment
+        run: python run_route_guardrail_experiment.py
+
+      - name: Verify route guardrail outputs
+        run: |
+          test -f results/route_guardrail/data/route_guardrail_raw_results.csv
+          test -f results/route_guardrail/data/route_guardrail_summary_results.csv
+          test -f results/route_guardrail/data/route_guardrail_by_tolerance.csv
+          test -f results/route_guardrail/figures/route_guardrail_makespan.png
+          test -f results/route_guardrail/figures/route_guardrail_energy_per_completed_task.png
+          test -f results/route_guardrail/figures/route_guardrail_load_balance.png
+          test -f results/route_guardrail/figures/route_guardrail_completion_rate.png
+          test -f results/route_guardrail/figures/route_guardrail_mission_success.png
+          test -f results/route_guardrail/figures/route_guardrail_tradeoff.png
+
+      - name: Upload route guardrail results
+        uses: actions/upload-artifact@v4
+        with:
+          name: route-guardrail-results
+          path: |
+            results/route_guardrail/data/*.csv
+            results/route_guardrail/figures/*.png
+          if-no-files-found: error
