@@ -1,0 +1,49 @@
+name: Run Hierarchical Communication Experiment
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  hierarchical-communication:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run hierarchical complete-preference communication experiment
+        run: python run_hierarchical_communication_experiment.py
+
+      - name: Verify hierarchical outputs
+        run: |
+          test -f results/hierarchical/data/hierarchical_raw_results.csv
+          test -f results/hierarchical/data/hierarchical_summary_results.csv
+          test -f results/hierarchical/data/hierarchical_by_method.csv
+          test -f results/hierarchical/figures/hierarchical_message_attempts.png
+          test -f results/hierarchical/figures/hierarchical_bytes_transmitted.png
+          test -f results/hierarchical/figures/hierarchical_latency_proxy.png
+          test -f results/hierarchical/figures/hierarchical_preference_coverage.png
+          test -f results/hierarchical/figures/hierarchical_safe_commit_rate.png
+          test -f results/hierarchical/figures/hierarchical_plan_match_rate.png
+          test -f results/hierarchical/figures/hierarchical_makespan.png
+          test -f results/hierarchical/figures/hierarchical_energy_per_task.png
+
+      - name: Upload hierarchical results
+        uses: actions/upload-artifact@v4
+        with:
+          name: hierarchical-communication-results
+          path: |
+            results/hierarchical/data/*.csv
+            results/hierarchical/figures/*.png
+          if-no-files-found: error
