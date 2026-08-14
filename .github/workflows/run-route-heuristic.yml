@@ -1,0 +1,47 @@
+name: Run Route Heuristic Optimization
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  route-heuristic:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run route heuristic optimization experiment
+        run: python run_route_heuristic_optimization.py
+
+      - name: Verify route heuristic outputs
+        run: |
+          test -f results/route_heuristic/data/route_heuristic_raw_results.csv
+          test -f results/route_heuristic/data/route_heuristic_summary_results.csv
+          test -f results/route_heuristic/data/route_heuristic_by_method.csv
+          test -f results/route_heuristic/figures/route_heuristic_makespan.png
+          test -f results/route_heuristic/figures/route_heuristic_energy_per_task.png
+          test -f results/route_heuristic/figures/route_heuristic_load_balance.png
+          test -f results/route_heuristic/figures/route_heuristic_completion_rate.png
+          test -f results/route_heuristic/figures/route_heuristic_mission_success.png
+          test -f results/route_heuristic/figures/route_heuristic_tradeoff.png
+
+      - name: Upload route heuristic results
+        uses: actions/upload-artifact@v4
+        with:
+          name: route-heuristic-results
+          path: |
+            results/route_heuristic/data/*.csv
+            results/route_heuristic/figures/*.png
+          if-no-files-found: error
