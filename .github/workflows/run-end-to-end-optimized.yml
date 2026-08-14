@@ -1,0 +1,52 @@
+name: Run End-to-End Optimized MRTA Experiment
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  end-to-end:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run end-to-end optimized MRTA experiment
+        run: python run_end_to_end_optimized_experiment.py
+
+      - name: Verify end-to-end outputs
+        run: |
+          test -f results/end_to_end/data/end_to_end_raw_results.csv
+          test -f results/end_to_end/data/end_to_end_summary_results.csv
+          test -f results/end_to_end/data/end_to_end_by_method.csv
+          test -f results/end_to_end/figures/end_to_end_task_completion.png
+          test -f results/end_to_end/figures/end_to_end_makespan.png
+          test -f results/end_to_end/figures/end_to_end_energy_per_task.png
+          test -f results/end_to_end/figures/end_to_end_travel_distance.png
+          test -f results/end_to_end/figures/end_to_end_finish_time_cv.png
+          test -f results/end_to_end/figures/end_to_end_safe_commit.png
+          test -f results/end_to_end/figures/end_to_end_duplicate_rate.png
+          test -f results/end_to_end/figures/end_to_end_message_attempts.png
+          test -f results/end_to_end/figures/end_to_end_bytes_transmitted.png
+          test -f results/end_to_end/figures/end_to_end_latency_proxy.png
+          test -f results/end_to_end/figures/end_to_end_tradeoff.png
+
+      - name: Upload end-to-end results
+        uses: actions/upload-artifact@v4
+        with:
+          name: end-to-end-optimized-results
+          path: |
+            results/end_to_end/data/*.csv
+            results/end_to_end/figures/*.png
+          if-no-files-found: error
