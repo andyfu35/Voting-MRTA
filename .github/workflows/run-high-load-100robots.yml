@@ -1,0 +1,59 @@
+name: Run 100-Robot High-Load MRTA Experiment
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "run_high_load_100robots_experiment.py"
+      - ".github/workflows/run-high-load-100robots.yml"
+      - "run_execution_simulation.py"
+      - "run_hierarchical_communication_experiment.py"
+      - "run_end_to_end_optimized_experiment.py"
+      - "run_multitask_experiment.py"
+  workflow_dispatch:
+
+jobs:
+  high-load-100robots:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run 100-robot high-load stress experiment
+        run: python run_high_load_100robots_experiment.py
+
+      - name: Verify outputs
+        run: |
+          test -f results/high_load_100robots/data/high_load_100robots_raw.csv
+          test -f results/high_load_100robots/data/high_load_100robots_summary.csv
+          test -f results/high_load_100robots/data/high_load_100robots_communication.csv
+          test -f results/high_load_100robots/figures/high_load_task_completion.png
+          test -f results/high_load_100robots/figures/high_load_makespan.png
+          test -f results/high_load_100robots/figures/high_load_energy_per_task.png
+          test -f results/high_load_100robots/figures/high_load_distance_per_task.png
+          test -f results/high_load_100robots/figures/high_load_finish_time_cv.png
+          test -f results/high_load_100robots/figures/high_load_planning_runtime.png
+          test -f results/high_load_100robots/figures/high_load_communication_gb.png
+          test -f results/high_load_100robots/figures/high_load_communication_reduction.png
+          test -f results/high_load_100robots/figures/high_load_plan_match.png
+          test -f results/high_load_100robots/figures/high_load_safe_commit.png
+
+      - name: Upload high-load results
+        uses: actions/upload-artifact@v4
+        with:
+          name: high-load-100robots-results
+          path: |
+            results/high_load_100robots/data/*.csv
+            results/high_load_100robots/figures/*.png
+          if-no-files-found: error
