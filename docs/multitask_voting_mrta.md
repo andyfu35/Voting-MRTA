@@ -1,120 +1,152 @@
-# Multi-Task Voting-MRTA
+# Multi-Task Peer-Cost Voting-MRTA
 
-This experiment extends Voting-MRTA from one task to multiple simultaneous tasks while keeping one shared cost definition across all voting policies.
+This is the canonical controlled multi-task experiment that follows the single-task peer-cost packet-loss study.
 
-## Architecture
+## Research question
 
-The multi-task pipeline is intentionally separated into four stages:
+With a fixed fleet of 100 robots and 30% independent directed P2P task-cost packet loss, how does increasing the number of simultaneous tasks affect assignment quality for different allocation/voting methods?
 
-1. **Local cost evaluation** - every robot/task pair uses the same cost model `C_ij`.
-2. **Distributed voting** - active robots convert the shared cost information into votes using a voting policy.
-3. **Vote aggregation** - the terminal receives the vote matrix under the existing packet-loss/retransmission model.
-4. **Constraint-aware global assignment** - the terminal chooses a feasible robot-task matching from the vote support matrix.
+Every task-count/method data point is summarized over 100 paired trials.
 
-For the first experiment, `C_ij` is Euclidean robot-to-task travel distance plus a small positive floor. The numerical costs change with robot/task positions, but every method uses the same formula and the same cost matrix inside a paired trial.
+## Controlled experiment settings
 
-## Why assignment is separate from cost
+- Robots: `100`
+- Directed P2P task-cost packet loss: `30%`
+- Trials per task-count/method point: `100`
+- Simultaneous task counts: `5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100`
+- Robot capacity: one simultaneous task per robot
+- Task delivery: reliable
+- Final vote collection: reliable/in-window in this controlled stage
+- Route planning, execution noise, retransmission, permanent robot failure, and task deadlines are excluded.
 
-A robot can correctly report that it is the cheapest candidate for several tasks at the same time. However, when those tasks are allocated simultaneously, independent per-task winners can overload the same robot.
+## Cost owner
 
-The first multi-task experiment therefore does **not** pretend that a robot knows which other tasks it will receive in the future. Current task cost and future assignment load are kept separate.
-
-With binary assignment variable `x_ij`:
-
-```text
-x_ij = 1 if robot i is assigned task j, otherwise 0
-```
-
-The terminal enforces:
+Each trial samples robot and task positions in one normalized 2-D workspace. The shared ground-truth cost is Euclidean robot-to-task travel distance plus a small positive floor:
 
 ```text
-sum_i x_ij = 1      for every task j
-sum_j x_ij <= 1     for every active robot i
+C_ij = 0.05 + distance(robot_i, task_j)
 ```
 
-The second constraint is the first controlled capacity model. Later experiments can replace `1` with robot-specific capacities.
+Every method is evaluated against exactly the same true cost matrix inside a paired trial.
 
-## Terminal objective
+## P2P communication model
 
-Voting methods produce a support matrix `V_ij`, where `V_ij` is the number of delivered votes supporting robot `i` for task `j`.
+Robot `i` computes only its own row of task costs. For every task `j`, the scalar cost message from sender `i` to receiver `r` is an independent directed Bernoulli delivery event.
 
-The terminal solves the maximum-support feasible assignment:
+Therefore:
+
+```text
+sender i -> receiver r -> task j
+```
+
+can be delivered while the reverse direction or another task-cost message is lost. Every robot always knows its own task costs.
+
+This produces a different incomplete candidate-cost view for each receiver and each task.
+
+## Compared methods
+
+### Hungarian
+
+Full-information centralized minimum-total-cost assignment. This is the optimal reference, not the proposed decentralized method.
+
+### Sequential Greedy
+
+Full-information heuristic baseline. Tasks are processed in task-index order; each task takes the cheapest robot that remains available.
+
+### Greedy
+
+For every task, each receiver votes for the cheapest candidate visible in its own incomplete P2P cost view.
+
+### Inverse
+
+Each receiver converts visible task costs to inverse-cost weights and samples exactly one candidate vote. The parameter selected from the preceding single-task tuning experiment is used internally; report tables show only `Inverse`.
+
+### Softmax
+
+Each receiver locally normalizes visible costs, converts them to Boltzmann/softmax weights, and samples exactly one candidate vote. The selected parameter is internal; report tables show only `Softmax`.
+
+### Rank
+
+Each receiver ranks only the candidates it actually sees, converts rank to inverse-rank weights, and samples exactly one candidate vote. The selected parameter is internal; report tables show only `Rank`.
+
+The selected single-task parameters are fixed before this multi-task evaluation rather than re-tuned separately for every task count.
+
+## Shared vote-to-assignment boundary
+
+The four P2P voting methods produce a candidate-by-task vote-support matrix:
+
+```text
+V_ij = number of receiver votes supporting robot i for task j
+```
+
+A shared capacity-one matching owner then solves:
 
 ```text
 maximize sum_ij V_ij x_ij
 ```
 
-subject to the assignment constraints above.
-
-A tiny paired random priority is used only when two feasible global assignments have exactly equal vote support. Task cost is not used as a hidden tie-breaking objective in the Voting-MRTA allocation, so the experiment measures how informative each voting policy is.
-
-## Shared cost, different voting policies
-
-The same `C_ij` matrix is used by:
-
-- Inverse voting: `alpha = 1, 2, 3`
-- Softmax voting: `beta = 1, 2`
-- Greedy voting
-- Heterogeneous voting using a balanced mix of Inverse, Softmax, and Greedy voters
-
-This isolates the effect of the **cost-to-vote policy** from the effect of the cost model itself.
-
-An important hypothesis is that very deterministic voting may lose useful second-choice information under multi-task conflicts. Softer probability distributions can preserve support for alternative robots, which may help the terminal construct a better feasible global assignment.
-
-## Task pressure
-
-The experiment uses simultaneous task-load ratios:
+subject to:
 
 ```text
-25%, 50%, 75% of the currently active robot count
+sum_i x_ij = 1   for every task j
+sum_j x_ij <= 1  for every robot i
 ```
 
-Each robot has capacity one in this first version. Increasing task load therefore increases competition for the same attractive robots and makes assignment conflicts more important.
+This support matching is common to all four voting policies so the experiment isolates the effect of the local cost-to-vote method. True task cost is not used as a hidden secondary tie-break; a tiny paired random priority resolves equal-support assignments only.
 
-## Baselines
+## Evaluation metrics
 
-### Centralized Optimal
+### Average optimality gap
 
-Uses the true shared cost matrix directly and minimizes total assignment cost subject to the same capacity constraints. This is an optimization upper bound / lower-cost reference, not the proposed voting method.
+```text
+gap (%) = 100 * (method_cost - Hungarian_cost) / Hungarian_cost
+```
 
-### Sequential Greedy
+Lower is better. Hungarian is always `0%` by definition.
 
-Processes tasks in a paired random order and assigns each task to the cheapest robot that is still available. It always produces a feasible assignment, but early decisions can prevent a lower-cost global allocation.
+### Near-optimal within 5%
 
-### Independent minimum-cost diagnostic
+Percentage of the 100 trials where:
 
-Each task independently picks its cheapest robot without considering other tasks. This is not treated as a feasible allocation method. Its conflict rate measures how often a global assignment layer is necessary.
+```text
+gap <= 5%
+```
 
-## Metrics
+Higher is better.
 
-The experiment reports:
+### Exact optimal assignment
 
-- Total allocation cost
-- Optimality gap relative to centralized optimal
-- Near-optimal allocation rate (`gap <= 5%`)
-- Exact assignment match rate
-- Complete-vote vs post-communication assignment preservation
-- Independent minimum-cost conflict rate
-- Maximum load produced by independent per-task winners
-- Received vote rate after retransmission
+Percentage of trials where the complete robot-task assignment exactly matches the Hungarian assignment.
+
+This is intentionally strict and may approach zero as task count rises even when the total cost remains close to optimal.
 
 ## Run
 
 ```bash
-python3 run_multitask_experiment.py
+python run_multitask_peer_cost_experiment.py
 ```
 
-Outputs are written to:
+The default run uses the full agreed experiment configuration. Optional smoke tests can reduce task counts or trials:
+
+```bash
+python run_multitask_peer_cost_experiment.py --tasks 5 50 100 --trials 10
+```
+
+## Outputs
 
 ```text
-results/multitask/data/
-results/multitask/figures/
+results/multitask_peer_cost/data/
+results/multitask_peer_cost/figures/
 ```
 
-## Is this decentralized?
+Report-ready CSV tables contain parameter-free method labels:
 
-Not fully. The architecture is best described as **distributed local evaluation and voting with centralized constraint-aware arbitration**.
+```text
+report_average_optimality_gap_percent.csv
+report_near_optimal_5pct_percent.csv
+report_exact_optimal_assignment_percent.csv
+```
 
-The robot side is distributed because multiple robots independently participate in evaluation/voting and the system does not rely on one robot making the local preference decision for everyone. The final matching is centralized because the terminal receives the votes and solves the global assignment constraints.
+## Scope boundary
 
-A fully decentralized MRTA version would also remove the terminal as the final decision authority and require robots to reach a consistent allocation through peer-to-peer negotiation, auctions, consensus, token passing, or another distributed coordination protocol.
+This experiment is not yet a full asynchronous CBBA/auction protocol. It first tests whether the cost-to-vote policies that were characterized in the single-task experiment remain useful when simultaneous tasks introduce robot-capacity conflicts. A separate later experiment can add true decentralized auction/bundle negotiation without changing this controlled baseline.
