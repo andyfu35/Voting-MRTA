@@ -15,7 +15,7 @@ ROBOT_MIN = 5
 ROBOT_MAX = 100
 LOSS_MIN_PERCENT = 0
 LOSS_MAX_PERCENT = 99
-DEFAULT_TRIALS = 200
+DEFAULT_TRIALS = 100
 COST_START = 10.0
 COST_STEP = 5.0
 
@@ -80,8 +80,7 @@ def simulate_cost_exchange_round(
     n = len(costs)
     delivered = rng.random((n, n)) >= loss_rate
     np.fill_diagonal(delivered, True)
-    views = np.where(delivered, costs[None, :], np.nan)
-    return views
+    return np.where(delivered, costs[None, :], np.nan)
 
 
 def choose_local_greedy_votes(cost_views: np.ndarray) -> np.ndarray:
@@ -133,11 +132,9 @@ def collect_votes_within_window(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Count only votes received before the fixed vote-window cutoff.
 
-    The current experiment deliberately does not model vote-message delay or
-    vote-message loss, so every robot's locally generated vote is in-window.
-    ``vote_in_window`` exists as the explicit decision boundary for a later
-    timing experiment; the majority rule itself therefore already uses the
-    actual number of in-window votes rather than total fleet membership.
+    Vote-message delay/loss is intentionally disabled in this experiment, so
+    every locally generated vote is currently in-window. ``vote_in_window`` is
+    retained as the explicit timing boundary for later experiments.
     """
     votes = np.asarray(votes, dtype=int)
     if votes.ndim != 2 or votes.shape[1] != n:
@@ -152,8 +149,8 @@ def collect_votes_within_window(
         if in_window.shape != votes.shape:
             raise ValueError("vote_in_window must have the same shape as votes")
 
-    trials = votes.shape[0]
-    counts = np.zeros((trials, n), dtype=np.int16)
+    trial_count = votes.shape[0]
+    counts = np.zeros((trial_count, n), dtype=np.int16)
     rows, voter_columns = np.nonzero(in_window)
     np.add.at(counts, (rows, votes[rows, voter_columns]), 1)
     votes_in_window = in_window.sum(axis=1).astype(int)
@@ -196,6 +193,37 @@ def resolve_strict_majority(
     )
 
 
+def summarize_execution_outcome(
+    vote_counts: np.ndarray,
+    majority: MajorityResult,
+    optimal_robot: int,
+) -> dict[str, float | int]:
+    """Summarize whether the globally optimal robot actually executes the task."""
+    trials = vote_counts.shape[0]
+    optimal_votes = vote_counts[:, optimal_robot]
+    successful_optimal_executions = int(
+        np.count_nonzero(majority.winner == optimal_robot)
+    )
+    wrong_executions = int(
+        np.count_nonzero(
+            (majority.winner >= 0) & (majority.winner != optimal_robot)
+        )
+    )
+    no_execution = trials - successful_optimal_executions - wrong_executions
+
+    return {
+        "successful_optimal_executions": successful_optimal_executions,
+        "failed_optimal_executions": trials - successful_optimal_executions,
+        "optimal_execution_success_rate": successful_optimal_executions / trials,
+        "optimal_execution_success_percent": 100.0 * successful_optimal_executions / trials,
+        "wrong_execution_count": wrong_executions,
+        "no_execution_count": no_execution,
+        "mean_optimal_votes": float(optimal_votes.mean()),
+        "min_optimal_votes": int(optimal_votes.min()),
+        "max_optimal_votes": int(optimal_votes.max()),
+    }
+
+
 def run_configuration(
     n: int,
     loss_percent: int,
@@ -212,14 +240,11 @@ def run_configuration(
     majority = resolve_strict_majority(vote_counts, votes_in_window)
 
     optimal_robot = 0
-    optimal_votes = vote_counts[:, optimal_robot]
-    committed_trials = int(np.count_nonzero(majority.committed))
-    correct_commits = int(np.count_nonzero(majority.winner == optimal_robot))
-    wrong_commits = int(
-        np.count_nonzero((majority.winner >= 0) & (majority.winner != optimal_robot))
-    )
-    no_majority = trials - committed_trials
+    execution = summarize_execution_outcome(vote_counts, majority, optimal_robot)
 
+    committed_trials = int(np.count_nonzero(majority.committed))
+    wrong_commits = int(execution["wrong_execution_count"])
+    no_majority = trials - committed_trials
     expected_optimal_vote_share = (
         1.0 + (n - 1) * (1.0 - loss_rate)
     ) / n
@@ -227,25 +252,20 @@ def run_configuration(
     return {
         "robots": n,
         "packet_loss_percent": loss_percent,
-        "trials": trials,
+        "trials_per_point": trials,
         "mean_votes_in_window": float(majority.votes_in_window.mean()),
         "vote_window_participation_rate": float(majority.votes_in_window.mean() / n),
         "mean_required_majority_votes": float(majority.required_votes.mean()),
+        **execution,
         "majority_commit_rate": committed_trials / trials,
-        "optimal_commit_rate": correct_commits / trials,
         "wrong_commit_rate": wrong_commits / trials,
         "no_majority_rate": no_majority / trials,
         "conditional_commit_accuracy": (
-            correct_commits / committed_trials if committed_trials else np.nan
+            int(execution["successful_optimal_executions"]) / committed_trials
+            if committed_trials
+            else np.nan
         ),
-        "mean_optimal_vote_share": float(
-            np.divide(
-                optimal_votes.astype(float),
-                majority.votes_in_window,
-                out=np.zeros_like(optimal_votes, dtype=float),
-                where=majority.votes_in_window > 0,
-            ).mean()
-        ),
+        "mean_optimal_vote_share": float(execution["mean_optimal_votes"] / n),
         "expected_optimal_vote_share": float(expected_optimal_vote_share),
         "mean_winning_vote_share": float(majority.vote_share.mean()),
     }
@@ -321,7 +341,9 @@ def save_heatmap(
 def save_selected_robot_curves(results: pd.DataFrame) -> None:
     selected_counts = [5, 10, 20, 30, 50, 75, 100]
     selected_counts = [
-        n for n in selected_counts if results["robots"].min() <= n <= results["robots"].max()
+        n
+        for n in selected_counts
+        if results["robots"].min() <= n <= results["robots"].max()
     ]
 
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -329,17 +351,17 @@ def save_selected_robot_curves(results: pd.DataFrame) -> None:
         part = results[results["robots"] == n].sort_values("packet_loss_percent")
         ax.plot(
             part["packet_loss_percent"],
-            part["optimal_commit_rate"],
+            part["optimal_execution_success_rate"],
             label=f"N={n}",
         )
     ax.set_xlabel("Directed P2P cost-message packet loss (%)")
-    ax.set_ylabel("Optimal strict-majority commit rate")
+    ax.set_ylabel("Optimal robot execution success rate")
     ax.yaxis.set_major_formatter(PercentFormatter(1.0))
     ax.set_ylim(-0.02, 1.02)
     ax.grid(True, alpha=0.25)
     ax.legend(ncol=2)
     fig.tight_layout()
-    fig.savefig(FIGURE_DIR / "optimal_commit_selected_robot_counts.png", dpi=180)
+    fig.savefig(FIGURE_DIR / "optimal_execution_selected_robot_counts.png", dpi=180)
     plt.close(fig)
 
 
@@ -348,9 +370,9 @@ def save_outputs(results: pd.DataFrame) -> None:
     results.to_csv(DATA_DIR / "peer_cost_majority_results.csv", index=False)
     save_heatmap(
         results,
-        "optimal_commit_rate",
-        "Optimal strict-majority commit rate",
-        "optimal_commit_rate_heatmap.png",
+        "optimal_execution_success_rate",
+        "Optimal robot execution success rate (100 trials per point)",
+        "optimal_execution_success_rate_heatmap.png",
     )
     save_heatmap(
         results,
@@ -361,25 +383,64 @@ def save_outputs(results: pd.DataFrame) -> None:
     save_heatmap(
         results,
         "wrong_commit_rate",
-        "Wrong strict-majority commit rate",
-        "wrong_commit_rate_heatmap.png",
+        "Wrong execution rate",
+        "wrong_execution_rate_heatmap.png",
     )
     save_selected_robot_curves(results)
+
+
+def printable_summary(results: pd.DataFrame) -> pd.DataFrame:
+    """Return a compact terminal summary that can be pasted back for analysis."""
+    preferred_robots = [5, 10, 20, 30, 50, 75, 100]
+    preferred_losses = [0, 10, 20, 25, 30, 40, 45, 50, 55, 60, 70, 75, 80, 90, 99]
+    robot_values = [
+        n
+        for n in preferred_robots
+        if results["robots"].min() <= n <= results["robots"].max()
+    ]
+    loss_values = [
+        p
+        for p in preferred_losses
+        if results["packet_loss_percent"].min()
+        <= p
+        <= results["packet_loss_percent"].max()
+    ]
+    summary = results[
+        results["robots"].isin(robot_values)
+        & results["packet_loss_percent"].isin(loss_values)
+    ].copy()
+    columns = [
+        "robots",
+        "packet_loss_percent",
+        "trials_per_point",
+        "successful_optimal_executions",
+        "optimal_execution_success_percent",
+        "mean_optimal_votes",
+        "mean_required_majority_votes",
+        "wrong_execution_count",
+        "no_execution_count",
+    ]
+    return summary[columns].sort_values(["robots", "packet_loss_percent"])
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Sweep robot count and directed P2P cost-message packet loss for "
-            "local greedy voting. Majority is >50% of votes received inside "
-            "the fixed vote window; vote delay/loss is intentionally disabled."
+            "local greedy voting. Each (robots, loss) point is summarized over "
+            "100 trials by default."
         )
     )
     parser.add_argument("--robot-min", type=int, default=ROBOT_MIN)
     parser.add_argument("--robot-max", type=int, default=ROBOT_MAX)
     parser.add_argument("--loss-min", type=int, default=LOSS_MIN_PERCENT)
     parser.add_argument("--loss-max", type=int, default=LOSS_MAX_PERCENT)
-    parser.add_argument("--trials", type=int, default=DEFAULT_TRIALS)
+    parser.add_argument(
+        "--trials",
+        type=int,
+        default=DEFAULT_TRIALS,
+        help="Trials summarized into each data point (default: 100).",
+    )
     parser.add_argument("--seed", type=int, default=RANDOM_SEED)
     return parser.parse_args()
 
@@ -396,15 +457,11 @@ def main() -> None:
     )
     save_outputs(results)
 
-    print("\nSaved:")
+    print("\nSaved full 5..100 x 0..99 summary:")
     print(DATA_DIR / "peer_cost_majority_results.csv")
     print(FIGURE_DIR)
-    print("\nSanity rows:")
-    sample = results[
-        results["packet_loss_percent"].isin([0, 25, 50, 75, 99])
-        & results["robots"].isin([5, 30, 100])
-    ]
-    print(sample.to_string(index=False))
+    print("\nPasteable execution summary:")
+    print(printable_summary(results).to_string(index=False))
 
 
 if __name__ == "__main__":
