@@ -161,4 +161,91 @@ Create a separate multi-task owner rather than extending this single-task compar
 
 ### Commit SHA
 - `5673b81007c7a21c1ad518e32af318f79a37b21a` - added `run_peer_cost_policy_comparison.py`
+- `3b1d17c20067be15635dd3262a77453603a41b59` - continuity update
+
+## 2026-09-03 - 100-Robot Multi-Task Peer-Cost Comparison
+
+### Purpose
+Introduce the next controlled experiment without modifying the single-task owners: fix the fleet at 100 robots, fix independent directed P2P task-cost packet loss at 30%, vary simultaneous task count, and compare assignment quality over 100 paired trials per task-count/method point.
+
+### Files
+- `run_multitask_peer_cost_experiment.py`
+- `docs/multitask_voting_mrta.md`
+- `docs/CHANGE_CONTINUITY.md`
+
+### Canonical experiment contract
+- robot count: 100
+- packet loss: 30% on directed sender->receiver scalar task-cost messages
+- trials: 100 per task-count/method point
+- task counts: 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100
+- robot simultaneous capacity: one task
+- task delivery and final vote collection: reliable in this controlled stage
+- excluded: route planning, execution noise, retransmission, permanent failure, asynchronous delay, deadlines
+
+### Owner and named functions
+The new owner is `run_multitask_peer_cost_experiment.py`.
+
+- contract validation: `validate_experiment_config`
+- shared ground-truth spatial cost: `generate_spatial_cost_matrix`
+- P2P task-cost communication visibility: `sample_p2p_cost_visibility`
+- probabilistic one-vote sampler: `sample_weighted_candidates`
+- local Greedy voting: `greedy_task_votes`
+- local Inverse voting: `inverse_task_votes`
+- local Softmax voting: `softmax_task_votes`
+- local Rank voting: `rank_task_votes`
+- policy dispatch: `generate_task_votes`
+- candidate/task support construction: `build_vote_support`
+- full-information Hungarian reference: `solve_hungarian_optimal`
+- full-information sequential greedy baseline: `solve_sequential_greedy`
+- capacity-one support matching: `solve_support_assignment`
+- assignment feasibility/cost boundary: `assignment_total_cost`
+- evaluation against Hungarian: `evaluate_assignment`
+- paired trial owner: `run_trial`
+- task-count sweep: `run_experiment`
+- report persistence: `save_report_tables`, `save_outputs`
+
+### Responsibility movement
+The prior `docs/multitask_voting_mrta.md` canonical specification described the older terminal-centric preference/vote experiment. It has been deliberately replaced as canonical by the raw peer-cost model. Older scripts are retained for historical reproducibility and are not wrapped or silently altered.
+
+### Preserved behavior
+- The selected single-task policy parameters are reused rather than re-tuned per task count: Inverse alpha=3, Softmax beta=5, Rank gamma=3.
+- Report labels intentionally hide tuning parameters and display only `Greedy`, `Inverse`, `Softmax`, and `Rank`.
+- All compared P2P voting policies receive the same task costs, the same P2P visibility realization, and shared voter random uniforms inside each paired trial.
+
+### Deliberately changed / added behavior
+- Costs are now robot-task spatial costs rather than a deterministic single-task ordered vector.
+- Each receiver can have a different incomplete cost view for each task.
+- Every receiver casts one candidate vote for every simultaneous task.
+- Multi-task capacity conflicts are resolved through one shared maximum-vote-support matching owner; true task cost is not used as a hidden vote-assignment tie-break.
+- Hungarian uses the complete true cost matrix and is the `0%` optimality-gap reference.
+- Sequential Greedy is retained as a full-information heuristic baseline.
+
+### Diagnostic contract
+- data: invalid task count/cost/assignment shapes fail at their named owner
+- communication: `sample_p2p_cost_visibility` is the only packet-loss owner
+- planning: each voting policy owns only its local cost-to-vote transformation
+- state/constraint: `solve_support_assignment` and `assignment_total_cost` own capacity-one feasibility
+- planning correctness: `evaluate_assignment` reports total cost, optimality gap, near-optimal-within-5%, and exact Hungarian assignment match
+- contract failures raise `ValueError` at the first named boundary
+
+### Validation performed
+Local smoke tests passed for:
+- task counts 5 and 10, 5 trials per point
+- task counts 5, 50, and 100, 10 trials per point
+
+The smoke tests produced feasible capacity-one assignments for every method and showed the expected distinction between exact assignment match and low-cost near-optimal solutions.
+
+### Known limitations / unfinished risks
+- This is not yet an asynchronous CBBA or bundle-auction implementation.
+- Task count is capped at 100 because robot simultaneous capacity is one in this first controlled experiment.
+- Vote delivery itself is still reliable; only cost-information exchange is lossy.
+- The support matching stage is a shared centralized arbitration boundary for all four voting policies; later work can replace that boundary with a true decentralized auction/consensus mechanism.
+- Spatial travel cost is the only task cost component in this experiment.
+
+### Next step
+Run the full 100-trial task-count sweep on the user's machine, inspect average optimality gap / near-optimal rate / exact assignment match, then decide which policy families deserve a true decentralized CBBA/auction implementation.
+
+### Commit SHA
+- `af952d2630898be006fe52249b3ef4d9453a86d4` - added `run_multitask_peer_cost_experiment.py`
+- `fb6b740263e82fe6909a1b7d158c7a38b68a3f86` - updated multi-task canonical specification
 - continuity update commit: this file's commit
