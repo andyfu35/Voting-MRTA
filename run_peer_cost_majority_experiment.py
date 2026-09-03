@@ -30,6 +30,8 @@ class MajorityResult:
     committed: np.ndarray
     winner: np.ndarray
     vote_share: np.ndarray
+    votes_in_window: np.ndarray
+    required_votes: np.ndarray
 
 
 def validate_experiment_config(
@@ -66,7 +68,8 @@ def simulate_cost_exchange_round(
     """Build one receiver-specific cost view under directed independent P2P loss.
 
     ``views[receiver, sender]`` is sender's cost if the directed sender->receiver
-    message arrived, otherwise NaN. Every robot always knows its own local cost.
+    message arrived before the cost-exchange cutoff, otherwise NaN. Every robot
+    always knows its own local cost.
     """
     costs = np.asarray(costs, dtype=float)
     if costs.ndim != 1 or len(costs) < 2:
@@ -82,7 +85,7 @@ def simulate_cost_exchange_round(
 
 
 def choose_local_greedy_votes(cost_views: np.ndarray) -> np.ndarray:
-    """Each receiver votes for the minimum-cost candidate visible in its view."""
+    """Each receiver votes for the minimum-cost candidate visible at cutoff."""
     views = np.asarray(cost_views, dtype=float)
     if views.ndim != 2 or views.shape[0] != views.shape[1]:
         raise ValueError("cost_views must be a square receiver x sender matrix")
@@ -123,37 +126,73 @@ def sample_local_greedy_votes(
     return np.minimum(first_success_index, receiver_index).astype(int)
 
 
-def count_votes(votes: np.ndarray, n: int) -> np.ndarray:
+def collect_votes_within_window(
+    votes: np.ndarray,
+    n: int,
+    vote_in_window: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Count only votes received before the fixed vote-window cutoff.
+
+    The current experiment deliberately does not model vote-message delay or
+    vote-message loss, so every robot's locally generated vote is in-window.
+    ``vote_in_window`` exists as the explicit decision boundary for a later
+    timing experiment; the majority rule itself therefore already uses the
+    actual number of in-window votes rather than total fleet membership.
+    """
     votes = np.asarray(votes, dtype=int)
     if votes.ndim != 2 or votes.shape[1] != n:
         raise ValueError("votes must have shape (trials, n)")
     if np.any((votes < 0) | (votes >= n)):
         raise ValueError("vote candidate out of range")
 
+    if vote_in_window is None:
+        in_window = np.ones_like(votes, dtype=bool)
+    else:
+        in_window = np.asarray(vote_in_window, dtype=bool)
+        if in_window.shape != votes.shape:
+            raise ValueError("vote_in_window must have the same shape as votes")
+
     trials = votes.shape[0]
     counts = np.zeros((trials, n), dtype=np.int16)
-    rows = np.repeat(np.arange(trials), n)
-    np.add.at(counts, (rows, votes.ravel()), 1)
-    return counts
+    rows, voter_columns = np.nonzero(in_window)
+    np.add.at(counts, (rows, votes[rows, voter_columns]), 1)
+    votes_in_window = in_window.sum(axis=1).astype(int)
+    return counts, votes_in_window
 
 
-def resolve_strict_majority(vote_counts: np.ndarray) -> MajorityResult:
-    """Commit only when one candidate receives strictly more than 50% of votes."""
+def resolve_strict_majority(
+    vote_counts: np.ndarray,
+    votes_in_window: np.ndarray,
+) -> MajorityResult:
+    """Commit when one candidate has >50% of votes received before cutoff."""
     counts = np.asarray(vote_counts)
+    received = np.asarray(votes_in_window, dtype=int)
     if counts.ndim != 2 or counts.shape[1] < 2:
         raise ValueError("vote_counts must have shape (trials, candidates>=2)")
+    if received.shape != (counts.shape[0],):
+        raise ValueError("votes_in_window must have one value per trial")
+    if np.any(received < 0):
+        raise ValueError("votes_in_window cannot be negative")
+    if np.any(counts.sum(axis=1) != received):
+        raise ValueError("vote_counts must sum to votes_in_window for every trial")
 
-    n = counts.shape[1]
-    required_votes = n // 2 + 1
+    required_votes = received // 2 + 1
     winner = np.argmax(counts, axis=1).astype(int)
     top_votes = counts[np.arange(len(counts)), winner]
-    committed = top_votes >= required_votes
+    committed = (received > 0) & (top_votes >= required_votes)
     resolved_winner = np.where(committed, winner, -1)
-    vote_share = top_votes.astype(float) / float(n)
+    vote_share = np.divide(
+        top_votes.astype(float),
+        received,
+        out=np.zeros_like(top_votes, dtype=float),
+        where=received > 0,
+    )
     return MajorityResult(
         committed=committed,
         winner=resolved_winner,
         vote_share=vote_share,
+        votes_in_window=received,
+        required_votes=required_votes,
     )
 
 
@@ -165,8 +204,12 @@ def run_configuration(
 ) -> dict[str, float | int]:
     loss_rate = loss_percent / 100.0
     votes = sample_local_greedy_votes(n, loss_rate, trials, rng)
-    vote_counts = count_votes(votes, n)
-    majority = resolve_strict_majority(vote_counts)
+
+    # Current controlled experiment: every robot finishes its local decision and
+    # its vote is counted before the shared vote-window cutoff. Only cost-message
+    # exchange is lossy in this stage of the study.
+    vote_counts, votes_in_window = collect_votes_within_window(votes, n)
+    majority = resolve_strict_majority(vote_counts, votes_in_window)
 
     optimal_robot = 0
     optimal_votes = vote_counts[:, optimal_robot]
@@ -185,7 +228,9 @@ def run_configuration(
         "robots": n,
         "packet_loss_percent": loss_percent,
         "trials": trials,
-        "required_majority_votes": n // 2 + 1,
+        "mean_votes_in_window": float(majority.votes_in_window.mean()),
+        "vote_window_participation_rate": float(majority.votes_in_window.mean() / n),
+        "mean_required_majority_votes": float(majority.required_votes.mean()),
         "majority_commit_rate": committed_trials / trials,
         "optimal_commit_rate": correct_commits / trials,
         "wrong_commit_rate": wrong_commits / trials,
@@ -193,7 +238,14 @@ def run_configuration(
         "conditional_commit_accuracy": (
             correct_commits / committed_trials if committed_trials else np.nan
         ),
-        "mean_optimal_vote_share": float(optimal_votes.mean() / n),
+        "mean_optimal_vote_share": float(
+            np.divide(
+                optimal_votes.astype(float),
+                majority.votes_in_window,
+                out=np.zeros_like(optimal_votes, dtype=float),
+                where=majority.votes_in_window > 0,
+            ).mean()
+        ),
         "expected_optimal_vote_share": float(expected_optimal_vote_share),
         "mean_winning_vote_share": float(majority.vote_share.mean()),
     }
@@ -319,7 +371,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Sweep robot count and directed P2P cost-message packet loss for "
-            "local greedy voting with a strict >50% commit rule."
+            "local greedy voting. Majority is >50% of votes received inside "
+            "the fixed vote window; vote delay/loss is intentionally disabled."
         )
     )
     parser.add_argument("--robot-min", type=int, default=ROBOT_MIN)
