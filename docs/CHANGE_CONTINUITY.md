@@ -339,3 +339,71 @@ Run the canonical 100-robot, 30%-loss, 100-trial task-count sweep and use the pr
 - `3763166ba052b9f809bc50147c3eb010d4c7a679` - replaced stochastic voting policies with real assignment optimizers
 - `095ffcd19fc8ccbd5ac16f26e32c501727191510` - updated canonical multi-task specification
 - continuity update commit: this file's commit
+
+## 2026-09-03 - Fix 100-Task Auction Convergence
+
+### Purpose
+Fix the first formal 100-trial run stopping at the 100-task boundary with `owner=run_multitask_peer_cost_experiment function=solve_batched_auction_assignments category=planning code=AUCTION_DID_NOT_CONVERGE details=tasks=100 active_receivers=1`. The failure came from using one fixed extremely small auction epsilon (`1e-8`) from the start; at the square 100x100 boundary one receiver could require more than the previous 200,000 iteration cap even though the assignment problem was feasible.
+
+### Files
+- `run_multitask_peer_cost_experiment.py`
+- `docs/multitask_voting_mrta.md`
+- `docs/CHANGE_CONTINUITY.md`
+
+### Owner and named functions
+Auction planning remains owned by `run_multitask_peer_cost_experiment.py`.
+
+- one epsilon-stage state machine: `run_batched_auction_stage`
+- epsilon-scaling owner: `solve_batched_auction_assignments`
+- unchanged zero-loss correctness gate: `validate_zero_loss_optimizer_contract`
+
+### Responsibility movement
+The iterative bid/price state for one epsilon level was separated from the multi-stage auction owner. No wrapper was added around another optimizer and no fallback to Hungarian was introduced for Auction results. `solve_batched_auction_assignments` remains the true P2P Auction owner.
+
+### Preserved behavior
+- 100 robots, 30% directed P2P task-cost loss, 100 trials per point.
+- same task counts and same random pairing rules.
+- same receiver-specific incomplete cost matrices.
+- same proposal support and consensus assignment boundary.
+- same Hungarian Oracle, P2P Hungarian, P2P Greedy, and P2P Auction method labels.
+- same optimality-gap, optimal-cost-match, near-optimal, exact-assignment, and valid-proposal metrics.
+- zero-loss Auction is still required to match Hungarian Oracle cost before the formal sweep starts.
+
+### Deliberately changed behavior
+- Replaced one fixed `AUCTION_EPSILON=1e-8` run with epsilon scaling: `1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8`.
+- Each epsilon stage resets assignment/ownership while retaining the preceding stage's price vector, so coarse stages approach the solution quickly and fine stages refine it.
+- For rectangular cases with fewer tasks than robots, zero-cost dummy tasks internally square the auction problem. Dummy tasks consume otherwise unused robots and do not change real-task objective cost.
+- The former global `AUCTION_DID_NOT_CONVERGE` diagnostic is replaced at the narrower boundary by `run_batched_auction_stage / planning / AUCTION_STAGE_DID_NOT_CONVERGE`, including `tasks`, `epsilon`, `active_receivers`, and `iterations`.
+
+### Diagnostic contract
+If a stage still fails to converge, the first failure now reports:
+
+```text
+owner=run_multitask_peer_cost_experiment
+function=run_batched_auction_stage
+category=planning
+code=AUCTION_STAGE_DID_NOT_CONVERGE
+```
+
+with the exact task count, epsilon stage, active receiver count, and iteration count. Data visibility, consensus state, and other optimizers remain separate owners.
+
+### Validation performed
+- Python compile check passed.
+- Mandatory zero-loss contract passed at task counts 1, 5, 50, and 100.
+- 30% packet loss smoke test passed for task counts 5, 20, and 100 with 3 trials per point.
+- A focused 100-task, 30%-loss run completed 20 trials without auction convergence failure.
+- In that 20-trial check, P2P Hungarian and P2P Auction produced the same average optimality gap (`1.474198%`) and both were near-optimal within 5% in `95%` of trials; P2P Greedy gap was `26.430752%`.
+- The user's full 100-trial sweep still needs to be rerun after pulling this commit; no partial 5-90 task output from the aborted run is treated as the final report dataset.
+
+### Known limitations / unfinished risks
+- Auction remains a receiver-local assignment optimizer, not a network-level asynchronous CBBA protocol.
+- The full canonical 100-trial sweep is pending user verification after this fix.
+- Extremely different future cost scales may warrant deriving epsilon levels from the observed cost range rather than fixed levels.
+
+### Next step
+Pull the convergence fix and rerun the canonical command. Use only a run that reaches `tasks=100/100 complete` and prints all report tables as the report dataset.
+
+### Commit SHA
+- `01d3920d80cf3d9376d0c1f1395d97d672b9cb6c` - epsilon-scaling Auction implementation
+- `3090d07d4188ecb0a659ff9a0f7b1e5e570def0f` - canonical Auction convergence specification update
+- continuity update commit: this file's commit
