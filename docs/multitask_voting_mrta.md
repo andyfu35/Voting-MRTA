@@ -53,7 +53,17 @@ Every receiver solves the exact linear assignment problem on its own incomplete 
 
 ### P2P Auction
 
-Every receiver solves the same local assignment objective using a Bertsekas-style auction algorithm with iterative prices and bids. Missing cost edges cannot be bid on. The implementation is batched across receivers but preserves an independent price/ownership state per receiver.
+Every receiver solves the same local assignment objective using a Bertsekas-style auction algorithm with iterative prices and bids. Missing cost edges cannot be bid on. The implementation is batched across receivers but preserves an independent price state per receiver.
+
+The auction uses epsilon scaling rather than one fixed tiny epsilon. Each stage restarts assignment ownership while retaining the previous stage's prices, using:
+
+```text
+1e-2 -> 1e-3 -> 1e-4 -> 1e-5 -> 1e-6 -> 1e-7 -> 1e-8
+```
+
+This avoids the very slow convergence observed for the previous fixed-`1e-8` implementation at the 100-robot / 100-task boundary while preserving the zero-loss optimal-cost contract.
+
+When `task_count < robot_count`, zero-cost dummy tasks are added internally so the auction solves a square assignment problem. Dummy tasks only occupy otherwise unused robots and do not change the optimal assignment or cost of the real tasks.
 
 ### P2P Greedy
 
