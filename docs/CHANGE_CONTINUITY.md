@@ -105,4 +105,4 @@ Run the full paired ablation with the canonical command and verify that Voting H
 ### Commit SHA
 - `fdc5099d74f5e79e682230fe34c47492de905fbc` - added `run_multitask_voting_ablation.py`
 - `04a172b1dc0ca69095d04d827b48927414738b8a` - added canonical ablation specification
-- continuity/archive commit: this file's commit
+- `41647907d7f2b4c6049a9979de774c3f60d14041` - archived prior continuity and recorded this ablation
