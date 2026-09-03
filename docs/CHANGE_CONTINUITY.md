@@ -249,3 +249,93 @@ Run the full 100-trial task-count sweep on the user's machine, inspect average o
 - `af952d2630898be006fe52249b3ef4d9453a86d4` - added `run_multitask_peer_cost_experiment.py`
 - `fb6b740263e82fe6909a1b7d158c7a38b68a3f86` - updated multi-task canonical specification
 - continuity update commit: this file's commit
+
+## 2026-09-03 - Redefine Multi-Task Comparison Around Real Optimizers
+
+### Purpose
+Reject the probabilistic single-vote policy families as the canonical optimizer comparison and replace them with actual assignment solvers. The trigger was the observed failure of Inverse/Softmax/Rank sampling to select the known best robot even at 0% packet loss. A method that intentionally randomizes away from a known optimum is not treated as an optimizer in the canonical experiment.
+
+### Files
+- `run_multitask_peer_cost_experiment.py`
+- `docs/multitask_voting_mrta.md`
+- `docs/CHANGE_CONTINUITY.md`
+
+### Owner and named functions
+The canonical owner remains `run_multitask_peer_cost_experiment.py`, but its planning responsibility has been replaced rather than wrapped.
+
+- diagnostic boundary: `fail`
+- contract validation: `validate_experiment_config`
+- shared ground-truth cost: `generate_spatial_cost_matrix`
+- P2P communication visibility: `sample_p2p_cost_visibility`
+- receiver-specific incomplete matrix: `build_receiver_cost_views`
+- exact assignment cost/feasibility: `assignment_total_cost`
+- exact Hungarian solver: `solve_hungarian_assignment`
+- Greedy heuristic solver: `solve_sequential_greedy`
+- batched Bertsekas-style auction solver: `solve_batched_auction_assignments`
+- local optimizer dispatch: `solve_local_optimizer_proposals`
+- proposal support: `build_assignment_support`
+- team consensus assignment: `solve_support_consensus`
+- end-to-end P2P optimizer proposal path: `optimizer_consensus_assignment`
+- mandatory complete-information check: `validate_zero_loss_optimizer_contract`
+- evaluation: `evaluate_assignment`
+- paired trial: `run_trial`
+- task-count sweep: `run_experiment`
+- report tables/figures: `report_table`, `save_report_tables`, `save_outputs`
+
+### Responsibility movement
+- Removed Inverse, Softmax, and Rank stochastic vote generation from the canonical multi-task owner.
+- The historical `run_peer_cost_policy_comparison.py` is retained only for reproducibility/screening and is no longer an optimizer benchmark.
+- Multi-task decisions now come from complete assignment proposals produced by actual assignment solvers over each receiver's own incomplete cost matrix.
+- P2P Hungarian and P2P Auction optimize the same one-task-per-robot assignment objective; P2P Greedy remains explicitly a heuristic baseline.
+- The final shared consensus boundary aggregates complete assignment proposals, not random candidate ballots.
+
+### Preserved behavior
+- 100 robots.
+- 30% independent directed sender->receiver task-cost packet loss by default.
+- 100 trials per task-count/method point.
+- task counts `5,10,20,30,40,50,60,70,80,90,100`.
+- every receiver always knows its own task-cost row.
+- task delivery and final proposal collection remain reliable/in-window.
+- one simultaneous task per robot.
+- all compared methods receive paired cost matrices and paired P2P loss realizations.
+- route planning, execution noise, retransmission, permanent failure, asynchronous delay, and deadlines remain excluded.
+
+### Deliberately changed behavior
+- Canonical methods are now `Hungarian Oracle`, `P2P Hungarian`, `P2P Auction`, and `P2P Greedy` only.
+- Missing receiver-local cost entries are unavailable (`+inf`) to the optimizer rather than converted to stochastic vote weights.
+- Every receiver proposes a complete feasible assignment when possible.
+- Proposal support is aggregated and the final team assignment maximizes proposal support under capacity-one constraints.
+- Added `optimal_cost_match_percent` so different assignments with the same optimal total cost count as successful optimization.
+- Added `average_valid_proposal_rate_percent` to expose local infeasibility separately from optimization quality.
+- Added `--packet-loss` CLI control for explicit zero-loss verification while keeping 30% as the canonical default.
+
+### Zero-loss diagnostic contract
+Before every formal sweep, `validate_zero_loss_optimizer_contract` checks complete-information cases at task counts 1, 5, 50, and 100.
+
+- P2P Hungarian must reach Hungarian Oracle total cost.
+- P2P Auction must reach Hungarian Oracle total cost.
+- In the single-task case P2P Greedy must select the oracle minimum-cost robot.
+- All local proposals must be valid at 0% loss.
+
+A violation aborts at the first failing owner/function with category `planning` or `contract` and a named code such as `ZERO_LOSS_NOT_ORACLE_CONSISTENT`.
+
+### Validation performed
+Local smoke tests passed after the redesign:
+- mandatory zero-loss contract passed for task counts 1, 5, 50, and 100.
+- 30% packet loss, tasks 5 and 20, 3 trials per point produced feasible final assignments for all methods.
+- at 5 tasks in that smoke test all P2P methods reached oracle cost.
+- at 20 tasks P2P Hungarian/Auction remained substantially closer to oracle than P2P Greedy, confirming that the multi-task optimizer distinction is now measurable.
+
+### Known limitations / unfinished risks
+- P2P Auction is an assignment auction over each receiver-local matrix; it is not yet a fully asynchronous network-level CBBA protocol with lossy bid messages.
+- P2P Hungarian and P2P Auction can produce very similar quality because both optimize the same local assignment objective; their future distinction should include communication/computation cost when the asynchronous protocol layer is added.
+- P2P Greedy can fail to produce a complete local assignment at high task load even when a feasible matching exists; this is intentionally reported through valid proposal rate rather than hidden by fallback logic.
+- The final proposal-consensus boundary remains shared and centralized for this controlled experiment.
+
+### Next step
+Run the canonical 100-robot, 30%-loss, 100-trial task-count sweep and use the printed tables for report analysis. The primary tables are average optimality gap, optimal-cost match rate, near-optimal-within-5% rate, and valid local proposal rate.
+
+### Commit SHA
+- `3763166ba052b9f809bc50147c3eb010d4c7a679` - replaced stochastic voting policies with real assignment optimizers
+- `095ffcd19fc8ccbd5ac16f26e32c501727191510` - updated canonical multi-task specification
+- continuity update commit: this file's commit
