@@ -5,7 +5,7 @@ This file defines which experiments must be rerun before report writing and whic
 ## Global report rules
 
 - Use seed `20260903` unless a canonical experiment states otherwise.
-- Use `100` trials per reported canonical configuration unless that contract is explicitly revised.
+- Use the experiment-specific canonical trial count. Experiment 1 remains 100 trials; Experiment 2 is now 20 trials per task point because its runtime contract was explicitly revised.
 - Smoke/trend runs using fewer trials or a sampled voter cap are preview data only and must not be mixed into formal report tables.
 - Within one comparison, all enabled algorithms must use paired scenarios: the same physical robot/task realization, voter identities, packet-loss realization, task order, tie priority, and capacity contract.
 - Robust Optimization and multi-objective success/time/energy cost models remain excluded from this report cycle.
@@ -34,48 +34,56 @@ Authoritative output root:
 results/peer_cost_majority/
 ```
 
-The current 100-trial Experiment 1 dataset is already complete and can be retained for the one-page paper.
+The completed 100-trial Experiment 1 dataset remains report-authoritative.
 
-## Experiment 2 - Fixed 100 robots, task workload 100 to 1000
+## Experiment 2 - Fixed 100 robots, fast Voting workload scaling
 
-Owner:
+Canonical owner:
 
 ```text
 run_multitask_peer_cost_all_optimizers.py
 ```
 
-The report-facing Experiment 2 is a fixed-fleet workload experiment.
+Fast heuristic owner:
+
+```text
+run_multitask_workload_heuristics.py
+```
 
 Canonical workload contract:
 
 ```text
 physical robots = 100 fixed
-task batches = 100, 200, 300, ..., 1000
+task batches = 100, 200, ..., 1000
 capacity_per_robot = ceil(tasks / 100)
 30% independent directed scalar task-cost packet loss
+20 trials per task point
+all 100 physical robots vote
 ```
 
-Task counts above 100 represent a batch of tasks allocated across the fixed fleet. They must not be described as one robot physically executing multiple tasks simultaneously.
+Task counts above 100 represent an allocation batch across the fixed fleet. They must not be described as one robot physically executing all assigned tasks simultaneously.
 
-Fast default report methods:
+### Canonical methods
 
 ```text
-Hungarian Oracle
-Voting Greedy
-Voting Hungarian
+Hungarian Oracle                full-information minimum-cost reference
+Voting Sequential Greedy
+Voting Global Greedy
+Voting Static Regret-2 Greedy
 Voting Auction
 ```
 
-Additional optimizer families:
+The three fast heuristics operate directly on physical receiver-local `100 x T` cost matrices and explicit robot capacity.
 
-```text
-Voting MILP               -> --include-milp
-Voting ACO + Local Search -> --include-aco
-```
+Voting Auction continues to use the existing capacity-one Auction owner after capacity-slot expansion.
 
-The intended complete multi-optimizer comparison uses both flags.
+Receiver-local Hungarian, MILP, and ACO + Local Search are no longer part of the report-facing lossy workload sweep. MILP and ACO remain available in the separate complete-information optimizer screening. This is a deliberate runtime/research-scope decision, not deletion of those optimizer implementations.
 
-The optimizer implementations remain owned by their existing modules. Experiment 2 uses uniform capacity-slot expansion and maps slot assignments back to physical robots rather than duplicating or rewriting optimizer state machines.
+### Why this method set is canonical
+
+The preceding all-five-family design took about `85.44 s` on macOS for only `T=1000`, one trial, and one voter. Its receiver-local MILP/ACO cost could not reasonably satisfy the user's approximately one-hour rerun budget.
+
+The new Experiment 2 therefore focuses the report question on communication loss + Voting aggregation while keeping one exact local assignment family, Auction, and three computationally distinct greedy baselines.
 
 ### Primary report metric
 
@@ -85,7 +93,7 @@ The one-page paper should primarily plot direct cost error relative to the full-
 Cost error (%) = 100 * (method_cost - oracle_cost) / oracle_cost
 ```
 
-Lower is better.
+Lower is better. The Oracle remains in CSV data but need not be plotted as a redundant `0%` curve.
 
 The code/CSV field is:
 
@@ -93,9 +101,9 @@ The code/CSV field is:
 average_optimality_gap_percent
 ```
 
-The `<=5%` rate remains a supporting metric only.
+The `<=5%` rate is supporting only.
 
-Exactly identical plotted method series are merged into one legend entry; numerically different series remain separate.
+Exactly identical plotted method series may share one legend entry; numerically different series remain separate.
 
 ### Canonical x-axis
 
@@ -103,7 +111,7 @@ Exactly identical plotted method series are merged into one legend entry; numeri
 Task batch size (100 robots fixed)
 ```
 
-The 10 points are:
+The ten points are:
 
 ```text
 100 200 300 400 500 600 700 800 900 1000
@@ -117,50 +125,48 @@ For task count `T`:
 K = ceil(T / 100)
 ```
 
-Each physical robot may receive at most `K` tasks from the batch.
+Each physical robot may receive at most `K` tasks from the allocation batch.
 
-The full-information Oracle, every receiver-local optimizer, and final support consensus all use this same uniform capacity through capacity-slot expansion.
-
-Raw/summary files must record:
-
-```text
-robots
-voters
-tasks
-capacity_per_robot
-assignment_slots
-```
+The Oracle, every receiver-local heuristic, Voting Auction, evaluation, and final support consensus all enforce the same physical capacity contract.
 
 ### Communication and pairing contract
 
-All enabled methods share the same:
+All Voting methods share the same:
 
 - physical `100 x T` true cost matrix;
-- physical voters;
+- physical voter identities;
 - packet-loss realization;
 - task order;
 - tie-priority matrix;
 - capacity value.
 
-ACO internal randomness uses a separate deterministic per-receiver stream and must not consume or perturb communication RNG state.
+Parallel process scheduling never enters a random seed formula.
 
-### Runtime / batching contract
+### Runtime contract
 
-Physical receiver views are streamed in bounded batches before capacity-slot expansion.
+Independent `(task_count, trial)` jobs are parallelized with `ProcessPoolExecutor`.
 
-Default voter batch size:
+Canonical default:
 
 ```text
-8
+workers = min(4, available CPU count)
+receiver batch size = 4
 ```
 
-Changing batch size changes memory/runtime only, not experiment semantics for a fixed configuration.
+Worker count and receiver batch size are runtime controls only. They must not change the paired experiment semantics.
 
-`--max-voters` is preview-only. Canonical formal data uses all `100` physical robots as voters.
+Parallel mode suppresses receiver-level worker output and reports trial completions from the parent process. When workers exceed one, BLAS/OpenMP thread-count environment variables default to one thread unless the user explicitly set them, avoiding nested thread oversubscription.
 
-### Output root
+### Zero-loss gates
 
-The workload experiment is intentionally separated from the superseded matched-scale outputs:
+Before the lossy sweep:
+
+- all three heuristics must return valid capacity-feasible complete-information proposals at bounded loads up to 200 tasks;
+- Voting Auction must match the capacitated Hungarian Oracle cost at bounded loads up to 200 tasks under the existing exact numerical tolerance.
+
+Heuristics are not required to equal the Oracle.
+
+### Authoritative output root
 
 ```text
 results/multitask_peer_cost_fixed100_workload/
@@ -179,71 +185,48 @@ Primary figure:
 average_optimality_gap_percent.png
 ```
 
-### Measured macOS runtime boundary
-
-A real all-family runtime probe at:
+Raw/summary files must retain:
 
 ```text
-100 robots fixed
-1000 tasks
-capacity 10
-1 trial
-1 voter
-Greedy + Hungarian + Auction + MILP + ACO + Local Search
+robots
+voters
+tasks
+capacity_per_robot
+assignment_slots
+method
+method_label
 ```
 
-completed in about `85.44 s` wall time on the user's MacBook Air. This is runtime validation only, not report data.
+### Real-machine timing sequence
 
-### New-machine runtime check
-
-Before starting the formal run on another machine, reproduce the same largest-point timing boundary:
+After pulling the new code, first run:
 
 ```bash
-python run_multitask_peer_cost_all_optimizers.py \
-  --tasks 1000 \
-  --trials 1 \
-  --max-voters 1 \
-  --voter-batch-size 1 \
-  --include-milp \
-  --include-aco
-```
-
-Then run the full canonical x-axis at low cost:
-
-```bash
-python run_multitask_peer_cost_all_optimizers.py \
+time python run_multitask_peer_cost_all_optimizers.py \
+  --tasks 100 500 1000 \
   --trials 1 \
   --max-voters 5 \
-  --voter-batch-size 1 \
-  --include-milp \
-  --include-aco
+  --workers 1
 ```
 
-These are preview/runtime-validation runs only.
-
-### Intended complete Experiment 2 rerun
-
-Once the new-machine timing is acceptable:
+Then run an all-voter parallel preview:
 
 ```bash
-python run_multitask_peer_cost_all_optimizers.py \
-  --include-milp \
-  --include-aco
+time python run_multitask_peer_cost_all_optimizers.py \
+  --tasks 100 500 1000 \
+  --trials 2 \
+  --workers 4
 ```
 
-This means:
+The canonical Experiment 2 command is now simply:
 
-```text
-100 fixed physical robots
-10 task-batch points, 100 through 1000 by 100
-100 trials per point
-all 100 robots vote
-30% directed cost-message loss
-Greedy, Hungarian, Auction, MILP, ACO + Local Search
-Hungarian Oracle as the full-information minimum-cost reference
+```bash
+time python run_multitask_peer_cost_all_optimizers.py
 ```
 
-Because MILP and especially ACO run receiver-locally, the complete command may be expensive. If the full run is not practical, any reduced trial/voter contract must be explicitly revised in the canonical documents before those data are called formal report results.
+That command uses ten task points, 20 trials per point, all 100 voters, the four report-facing Voting methods, and up to four process workers.
+
+The one-hour runtime is an objective that still requires measurement on the user's Mac; it is not guaranteed by specification alone.
 
 ## Experiment 3 - Direct vs Voting ablation
 
@@ -263,23 +246,24 @@ Before any dataset is called formal report data, confirm:
 
 1. Experiment 1 uses the completed canonical 100-trial dataset;
 2. Experiment 2 uses exactly `100` physical robots at every task load;
-3. Experiment 2 task batches are exactly `100..1000` in steps of `100` unless the canonical spec is explicitly revised;
-4. `capacity_per_robot = ceil(tasks/100)` is recorded and enforced by Oracle, local optimizers, and consensus;
+3. Experiment 2 task batches are exactly `100..1000` in steps of `100`;
+4. Experiment 2 has `20` completed trials per task point unless a later canonical revision explicitly changes this;
 5. formal Experiment 2 uses all `100` physical robots as voters;
-6. preview runs with `--max-voters` or fewer than 100 trials are labeled preview;
-7. paired scenario/communication inputs are shared by all enabled methods;
-8. ACO uses separate algorithm-internal RNG and does not regenerate communication loss;
-9. bounded zero-loss integration gates pass for all enabled method families;
+6. `capacity_per_robot = ceil(tasks/100)` is recorded and enforced by all methods and consensus;
+7. paired scenario/communication inputs are shared by all four Voting methods;
+8. parallel worker scheduling does not change seeds or results;
+9. bounded heuristic feasibility and Auction exactness gates pass;
 10. all final report CSVs were generated by the final code version;
 11. the main Experiment 2 figure uses direct cost error from the minimum;
 12. calculations use raw CSV values even when presentation values are rounded;
-13. task counts above 100 are described as allocation workload/batches, not simultaneous physical task execution.
+13. task counts above 100 are described as allocation workload/batches;
+14. MILP/ACO claims come only from their separate screening data, not from the new lossy workload curve.
 
 ## Current one-page report structure
 
 The CACS one-page paper should tell two main stories:
 
 1. **Single-task communication robustness** - how packet loss and fleet size affect majority execution success.
-2. **Fixed-fleet workload scaling** - with 100 robots held constant, how Voting assignment cost error changes as the task batch grows from 100 to 1000 under a shared capacity and communication model.
+2. **Fixed-fleet workload scaling** - with 100 robots held constant, how Voting assignment cost error changes as the task batch grows from 100 to 1000 using scalable local decision rules.
 
-The one-page draft may reserve the Experiment 2 figure area until the new fixed-100 workload rerun is complete. The Direct-vs-Voting ablation and older matched-scale preview remain supporting/historical material rather than current main-figure data.
+For the paper bibliography, retain the Hungarian assignment reference for the Oracle and the Bertsekas Auction reference for Voting Auction. The three greedy baselines are explicitly defined by the experiment and should not be given unrelated optimizer references merely to fill the bibliography.
