@@ -36,7 +36,7 @@ results/peer_cost_majority/
 
 The current 100-trial Experiment 1 dataset is already complete and can be retained for the one-page paper.
 
-## Experiment 2 - Fixed 100 robots, task workload 50 to 1000
+## Experiment 2 - Fixed 100 robots, task workload 100 to 1000
 
 Owner:
 
@@ -44,13 +44,13 @@ Owner:
 run_multitask_peer_cost_all_optimizers.py
 ```
 
-The report-facing Experiment 2 is no longer a matched robot/task scale experiment.
+The report-facing Experiment 2 is a fixed-fleet workload experiment.
 
 Canonical workload contract:
 
 ```text
 physical robots = 100 fixed
-task batches = 50, 100, 150, ..., 1000
+task batches = 100, 200, 300, ..., 1000
 capacity_per_robot = ceil(tasks / 100)
 30% independent directed scalar task-cost packet loss
 ```
@@ -69,7 +69,7 @@ Voting Auction
 Additional optimizer families:
 
 ```text
-Voting MILP             -> --include-milp
+Voting MILP               -> --include-milp
 Voting ACO + Local Search -> --include-aco
 ```
 
@@ -103,11 +103,10 @@ Exactly identical plotted method series are merged into one legend entry; numeri
 Task batch size (100 robots fixed)
 ```
 
-The 20 points are:
+The 10 points are:
 
 ```text
-50 100 150 200 250 300 350 400 450 500
-550 600 650 700 750 800 850 900 950 1000
+100 200 300 400 500 600 700 800 900 1000
 ```
 
 ### Capacity contract
@@ -161,7 +160,7 @@ Changing batch size changes memory/runtime only, not experiment semantics for a 
 
 ### Output root
 
-The new workload experiment is intentionally separated from the superseded matched-scale outputs:
+The workload experiment is intentionally separated from the superseded matched-scale outputs:
 
 ```text
 results/multitask_peer_cost_fixed100_workload/
@@ -180,26 +179,41 @@ Primary figure:
 average_optimality_gap_percent.png
 ```
 
-### Real-machine smoke before the complete rerun
+### Measured macOS runtime boundary
 
-First verify capacity > 1 and both slower optimizer families on a tiny paired smoke:
+A real all-family runtime probe at:
+
+```text
+100 robots fixed
+1000 tasks
+capacity 10
+1 trial
+1 voter
+Greedy + Hungarian + Auction + MILP + ACO + Local Search
+```
+
+completed in about `85.44 s` wall time on the user's MacBook Air. This is runtime validation only, not report data.
+
+### New-machine runtime check
+
+Before starting the formal run on another machine, reproduce the same largest-point timing boundary:
 
 ```bash
 python run_multitask_peer_cost_all_optimizers.py \
-  --tasks 50 150 300 \
+  --tasks 1000 \
   --trials 1 \
-  --max-voters 5 \
+  --max-voters 1 \
   --voter-batch-size 1 \
   --include-milp \
   --include-aco
 ```
 
-Then run a low-cost full-range trend:
+Then run the full canonical x-axis at low cost:
 
 ```bash
 python run_multitask_peer_cost_all_optimizers.py \
-  --trials 3 \
-  --max-voters 10 \
+  --trials 1 \
+  --max-voters 5 \
   --voter-batch-size 1 \
   --include-milp \
   --include-aco
@@ -209,7 +223,7 @@ These are preview/runtime-validation runs only.
 
 ### Intended complete Experiment 2 rerun
 
-Once the smoke runtime is acceptable:
+Once the new-machine timing is acceptable:
 
 ```bash
 python run_multitask_peer_cost_all_optimizers.py \
@@ -221,7 +235,7 @@ This means:
 
 ```text
 100 fixed physical robots
-20 task-batch points, 50 through 1000 by 50
+10 task-batch points, 100 through 1000 by 100
 100 trials per point
 all 100 robots vote
 30% directed cost-message loss
@@ -249,7 +263,7 @@ Before any dataset is called formal report data, confirm:
 
 1. Experiment 1 uses the completed canonical 100-trial dataset;
 2. Experiment 2 uses exactly `100` physical robots at every task load;
-3. Experiment 2 task batches are `50..1000` in steps of `50` unless the canonical spec is explicitly revised;
+3. Experiment 2 task batches are exactly `100..1000` in steps of `100` unless the canonical spec is explicitly revised;
 4. `capacity_per_robot = ceil(tasks/100)` is recorded and enforced by Oracle, local optimizers, and consensus;
 5. formal Experiment 2 uses all `100` physical robots as voters;
 6. preview runs with `--max-voters` or fewer than 100 trials are labeled preview;
@@ -266,6 +280,6 @@ Before any dataset is called formal report data, confirm:
 The CACS one-page paper should tell two main stories:
 
 1. **Single-task communication robustness** - how packet loss and fleet size affect majority execution success.
-2. **Fixed-fleet workload scaling** - with 100 robots held constant, how Voting assignment cost error changes as the task batch grows from 50 to 1000 under a shared capacity and communication model.
+2. **Fixed-fleet workload scaling** - with 100 robots held constant, how Voting assignment cost error changes as the task batch grows from 100 to 1000 under a shared capacity and communication model.
 
 The one-page draft may reserve the Experiment 2 figure area until the new fixed-100 workload rerun is complete. The Direct-vs-Voting ablation and older matched-scale preview remain supporting/historical material rather than current main-figure data.
