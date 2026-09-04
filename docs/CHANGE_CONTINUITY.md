@@ -1,158 +1,288 @@
 # Change Continuity
 
-Historical continuity through `2026-09-04 - Redesign Experiment 2 as Fixed-100-Robot Workload Scaling` is preserved exactly in Git at:
+Historical continuity through `2026-09-04 - Narrow Experiment 2 to 100-Task Steps and Hand Off to Windows Runtime` is preserved exactly in Git at:
 
 ```text
-commit: 3269adf810ea4132b216fb39b3dee842255d53cb
-blob:   a142dc4e9c1c1ac9fb9bd60c48d525c6de1dccdd
+commit: 5534ccfbb57cae6bdf0d31aa0a1b881f2e577b92
+blob:   d96ca1fc86de4a0c45a5e570a28bdbbcd6b9af14
 ```
 
-## 2026-09-04 - Narrow Experiment 2 to 100-Task Steps and Hand Off to Windows Runtime
+## 2026-09-04 - Replace Slow Lossy Optimizers with Fast Heuristics and Parallel Trials
 
 ### Purpose
-The user kept the fixed physical fleet at `100` robots but decided that the report-facing Experiment 2 curve does not need 20 points at 50-task spacing. The canonical workload sweep is now reduced to ten points:
+The user decided to keep Experiment 2 on the Mac and target an approximately one-hour end-to-end runtime. The preceding fixed-100-robot design still executed receiver-local Hungarian, MILP, and ACO + Local Search. A real macOS probe at `1000` tasks, one trial, one voter, with all five optimizer families took about `85.44 s`, making the full all-voter repeated experiment impractical.
+
+This change narrows the report-facing research question to communication loss + Voting workload scaling and replaces the expensive/redundant receiver-local solver set with computationally scalable local decision rules:
 
 ```text
-100, 200, 300, 400, 500, 600, 700, 800, 900, 1000
+Voting Sequential Greedy
+Voting Global Greedy
+Voting Static Regret-2 Greedy
+Voting Auction
 ```
 
-This preserves the same workload/capacity/communication model while cutting the number of formal task-load configurations in half.
+`Hungarian Oracle` remains the full-information minimum-cost reference only.
 
-The user also completed a real largest-load timing probe on macOS before moving the run to a Windows machine. That probe used `1000` tasks, one trial, one voter, all five optimizer families, and completed in approximately `85.44 s` wall time. It is a runtime measurement only, not report data.
+The canonical Experiment 2 trial count is deliberately reduced from `100` to `20` per task point, while retaining all `100` physical robots as voters. Independent `(task_count, trial)` jobs are parallelized with a bounded process pool, defaulting to up to four workers.
 
-Before modification, repository-root `AGENTS.md` and `docs/AI_CHANGE_PROTOCOL.md` were checked in order and remain absent. Then `docs/CHANGE_CONTINUITY.md`, canonical `docs/multitask_voting_mrta.md`, the actual Experiment 2 owner `run_multitask_peer_cost_all_optimizers.py`, exact functions `parse_task_counts`, `run_experiment`, and `parse_args`, and `docs/report_experiment_suite.md` were read before writing.
+Before modification, repository-root `AGENTS.md` and `docs/AI_CHANGE_PROTOCOL.md` were checked in that order and remain absent. Then `docs/CHANGE_CONTINUITY.md`, canonical `docs/multitask_voting_mrta.md`, the actual Experiment 2 owner `run_multitask_peer_cost_all_optimizers.py`, the exact capacity/routing/trial/report functions, the existing Greedy/Auction owner functions in `run_multitask_peer_cost_experiment.py`, and `docs/report_experiment_suite.md` were read before writing.
 
 ### Files
-- `run_multitask_peer_cost_all_optimizers.py`
-- `docs/multitask_voting_mrta.md`
-- `docs/report_experiment_suite.md`
-- `docs/CHANGE_CONTINUITY.md`
+- new optimizer owner: `run_multitask_workload_heuristics.py`
+- canonical Experiment 2 owner: `run_multitask_peer_cost_all_optimizers.py`
+- canonical specification: `docs/multitask_voting_mrta.md`
+- report suite: `docs/report_experiment_suite.md`
+- continuity: `docs/CHANGE_CONTINUITY.md`
+
+The existing optimizer-screening module and historical Experiment 1/3 owners were not modified.
 
 ### Owner and named functions
-Experiment 2 remains owned by:
+
+#### Fast heuristic owner
+
+```text
+run_multitask_workload_heuristics.py
+```
+
+Named boundaries:
+
+- input/data/capacity validation: `validate_capacitated_problem`
+- sequential heuristic: `solve_sequential_greedy_capacitated`
+- global cheapest-edge heuristic: `solve_global_greedy_capacitated`
+- one-time two-best regret ordering: `compute_static_regret2_priority`
+- static regret heuristic: `solve_regret2_greedy_capacitated`
+- method routing: `solve_capacitated_heuristic`
+- receiver batch execution: `solve_capacitated_heuristic_batch`
+
+#### Experiment 2 owner
 
 ```text
 run_multitask_peer_cost_all_optimizers.py
 ```
 
-The changed configuration concern is exposed through:
+Important changed/added named boundaries:
 
-- canonical default task set: `WORKLOAD_TASK_COUNTS`
-- CLI/default task resolution: `parse_task_counts`
-- experiment sweep: `run_experiment`
-- CLI documentation/contract: `parse_args`
+- canonical method selection: `resolve_voting_methods`
+- workload/runtime validation: `validate_workload_config`
+- capacity representation: `resolve_robot_capacity`, `build_capacity_slot_cost_matrix`, `build_capacity_slot_cost_views`, `map_slot_assignments_to_robots`
+- physical capacity validation/evaluation: `validate_capacity_assignment`, `assignment_total_cost_with_capacity`
+- full-information reference: `solve_capacity_oracle`
+- communication view ownership: `sample_voter_batch_visibility`, `build_voter_batch_cost_views`
+- local solver routing: `solve_voter_batch_proposals`
+- proposal support: `accumulate_proposal_support`, `collect_voting_support`
+- final capacitated Voting consensus: `solve_capacity_support_consensus`, `finalize_voting_assignments`
+- bounded heuristic gate: `validate_zero_loss_heuristic_contracts`
+- bounded exact Auction gate: `validate_zero_loss_auction_contract`
+- paired trial: `run_trial`
+- process worker boundary: `run_trial_job`
+- deterministic job planning: `build_trial_jobs`
+- nested-thread control: `configure_worker_thread_environment`
+- parent progress boundary: `report_trial_completion`
+- runtime execution: `execute_trial_jobs`
+- sweep/report: `run_experiment`, `summarize_results`, `save_outputs`
 
-No optimizer owner changed.
-
-True optimizer ownership remains:
+The existing Auction algorithm itself remains owned by:
 
 ```text
-Greedy / Hungarian / Auction:
-run_multitask_peer_cost_experiment.py
+run_multitask_peer_cost_experiment.py::solve_batched_auction_assignments
+```
 
-MILP / ACO + Local Search:
-run_multitask_optimizer_screening.py
+The full-information Oracle remains owned by:
+
+```text
+run_multitask_peer_cost_experiment.py::solve_hungarian_assignment
 ```
 
 ### Responsibility movement
-No responsibility moved between modules.
+The three new greedy algorithms are not added as wrappers around an unrelated optimizer owner. They have a dedicated optimizer owner, `run_multitask_workload_heuristics.py`, and operate directly on the physical `100 x T` receiver-local matrix plus explicit physical capacity.
 
-The fixed-100 capacity-slot model, receiver-local communication model, optimizer routing, support accumulation, and final capacity consensus are unchanged. Only the canonical list of workload samples changed from 50-task spacing to 100-task spacing.
+This removes unnecessary slot expansion from Sequential/Global/Static-Regret heuristics. Capacity slots remain only where required by existing capacity-one exact owners: full-information Hungarian Oracle, Voting Auction, and final support consensus.
+
+Trial scheduling is separated from trial semantics. `run_trial` still owns one deterministic paired trial. `build_trial_jobs` creates independent jobs, and `execute_trial_jobs` owns serial/process-pool execution. Worker count never enters a seed formula.
 
 ### Preserved behavior
-- physical robot count remains exactly `100`;
+- physical robots remain exactly `100`;
+- canonical task loads remain `100, 200, ..., 1000`;
 - directed P2P scalar cost-message loss remains `30%`;
 - scalar cost remains `0.05 + EuclideanDistance`;
-- task counts represent allocation batch workload, not simultaneous physical execution;
-- `capacity_per_robot = ceil(tasks/100)` remains unchanged;
-- all enabled methods share the same scenario, voter identities, communication realization, task order, tie priority, and capacity;
-- ACO keeps its separate deterministic per-receiver algorithm RNG;
-- default Voting methods remain Greedy, Hungarian, and Auction;
-- `--include-milp`, `--include-aco`, and `--only-milp` keep their preceding meanings;
-- formal mode still means `100` trials and all `100` robots voting;
-- receiver batching remains a runtime/memory control only;
+- workload capacity remains `ceil(tasks/100)`;
+- task counts remain allocation batches, not simultaneous physical execution claims;
+- every physical receiver always knows its own sender row;
+- missing receiver-local costs remain `+inf` unavailable edges;
+- task delivery remains reliable;
+- final proposal collection remains reliable/in-window;
+- all Voting methods share identical cost matrix, voter IDs, packet-loss realization, task order, tie priority, and capacity within a trial;
+- support is accumulated on physical robot/task pairs;
+- final consensus maximizes proposal support under the same physical capacity;
+- true task cost is not used as a hidden consensus tie-break;
+- full-information Hungarian remains the minimum-cost reference;
+- primary report metric remains direct percentage cost error from the minimum;
+- `<=5%`, optimal-cost match, exact assignment, and valid-proposal-rate metrics remain supporting CSV outputs;
 - output root remains `results/multitask_peer_cost_fixed100_workload/`;
-- the primary metric remains direct cost error from the full-information capacitated minimum;
-- exact-overlap curve merging remains presentation-only;
-- Experiment 1 and Experiment 3 are unchanged.
+- Experiment 1 and Experiment 3 remain unchanged.
 
 ### Deliberately changed behavior
-The canonical/default workload points changed from:
+
+#### Canonical Voting optimizer set
+Removed from report-facing lossy Experiment 2:
 
 ```text
-50, 100, 150, ..., 1000
+Voting Hungarian
+Voting MILP
+Voting ACO + Local Search
+```
+
+These implementations were not deleted. MILP and ACO remain in the separate complete-information optimizer screening. Receiver-local Hungarian is omitted because Voting Auction already provides the exact local assignment-family comparison and previous measurements showed the exact curves were largely redundant.
+
+New report-facing heuristic set:
+
+```text
+Voting Sequential Greedy
+Voting Global Greedy
+Voting Static Regret-2 Greedy
+Voting Auction
+```
+
+`Static Regret-2` is intentionally named: its best-vs-second-best receiver-visible regret is computed once per task, ties use the paired task order, and capacity-aware cheapest assignment then follows that fixed priority. It is not claimed to be dynamically recomputed Regret-2.
+
+#### Canonical trial count
+Experiment 2 formal default changed from:
+
+```text
+100 trials / task point
 ```
 
 to:
 
 ```text
-100, 200, 300, ..., 1000
+20 trials / task point
 ```
 
-Therefore the no-`--tasks` full Experiment 2 command now runs ten configurations rather than twenty.
+All `100` physical voters remain enabled in canonical mode. `--trials` can increase the count if measured runtime permits, but results must be reported with the actual trial count.
 
-The canonical/report documentation now records the real macOS timing boundary:
+#### Trial parallelism
+New CLI/runtime control:
 
 ```text
-T=1000
-1 trial
-1 voter
-all five optimizer families
-85.44 s wall time
+--workers N
 ```
 
-This timing datum is explicitly diagnostic/runtime evidence and must not be plotted as Experiment 2 result data.
+Default:
+
+```text
+min(4, available CPU count)
+```
+
+Independent paired trials execute through `ProcessPoolExecutor`. `--workers 1` is the serial diagnostic path.
+
+When more than one worker is used, `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS`, `MKL_NUM_THREADS`, and `NUMEXPR_NUM_THREADS` default to `1` only when the user has not explicitly set them. This is a runtime oversubscription guard, not an experiment-semantic change.
+
+Parallel workers suppress receiver-level progress output. The parent reports completed trials to avoid interleaved console output.
+
+#### Receiver batching
+Default receiver batch size changes from `8` to `4` to reduce per-process peak memory when several trials execute concurrently. It remains a runtime/memory control only.
+
+#### CLI simplification
+The report-facing Experiment 2 owner no longer exposes `--include-milp`, `--only-milp`, or `--include-aco`. Those methods are no longer part of this experiment's canonical question.
 
 ### Diagnostic contract
-No new diagnostic category or code was introduced.
+Existing Experiment 2 diagnostics retain the standard form:
 
-Existing first-failure diagnostics remain unchanged, including:
+```text
+owner=run_multitask_peer_cost_all_optimizers
+function=<named function>
+category=<data|time|state|dependency|planning|safety|runtime|contract>
+code=<named code>
+```
+
+New runtime validation example:
 
 ```text
 owner=run_multitask_peer_cost_all_optimizers
 function=validate_workload_config
 category=contract
-code=TASK_COUNT_ABOVE_REPORT_BOUNDARY
+code=INVALID_WORKER_COUNT
 ```
 
-and true optimizer failures continue to propagate from their owners, including MILP `INVALID_MILP_COST` and ACO `INVALID_ACO_COST`.
+New heuristic-owner diagnostics use:
+
+```text
+owner=run_multitask_workload_heuristics
+function=<named function>
+category=<data|state|contract>
+code=<named code>
+```
+
+Representative examples:
+
+```text
+function=validate_capacitated_problem category=data code=INVALID_HEURISTIC_COST
+function=validate_capacitated_problem category=state code=CAPACITY_EXCEEDED
+function=solve_capacitated_heuristic category=contract code=UNKNOWN_METHOD
+```
+
+Existing Auction diagnostics continue to propagate from `run_multitask_peer_cost_experiment`; no wrapper replaces the first failing owner.
 
 ### Validation performed
-- The updated owner was re-fetched from GitHub after the write.
-- `WORKLOAD_TASK_COUNTS` was confirmed as `tuple(range(100, 1001, 100))`.
-- `run_experiment` and `parse_args` were re-read and confirmed to describe the 100-to-1000 default sweep.
-- The preceding real macOS smoke already demonstrated that the unchanged 1000-task capacity-10 path can execute all five methods successfully under SciPy/HiGHS and the ACO implementation.
-- No GitHub CI status checks are configured for this code block.
+- The newly created `run_multitask_workload_heuristics.py` was re-fetched from GitHub and inspected across validation, Sequential Greedy, Global Greedy, static Regret-2 priority, routing, and receiver-batch execution.
+- The rewritten Experiment 2 owner was re-fetched and inspected across imports/constants, capacity functions, solver routing, bounded zero-loss gates, deterministic trial seeding, process-job creation, process execution, report aggregation, and CLI defaults.
+- Canonical/report documents were synchronized with the new method set, 20-trial formal contract, and parallel runtime design.
+- A container-side repository clone/compile attempt was made, but the container still cannot resolve `github.com`; therefore no real repository bytecode/runtime test could be executed there.
+- The preceding real macOS all-five-family probe remains useful only as the runtime motivation for this redesign, not as validation of the new method set.
 
 ### Known limitations / unfinished risks
-- The full formal run is still computationally expensive because every task load uses 100 trials x 100 receiver-local voters.
-- The measured macOS largest-load boundary of 85.44 s for one voter means the 1000-task formal point alone can be very expensive if runtime scales approximately with voter/trial count.
-- Moving to a faster Windows desktop may reduce wall time, but the current Experiment 2 owner is still primarily serial across receiver-local optimizer calls; GPU hardware does not accelerate the current NumPy/SciPy/Python implementation automatically.
-- ACO and MILP remain the likely runtime bottlenecks at large task loads.
-- The current script writes the report CSVs only after `run_experiment` completes. An interrupted long formal run therefore does not yet have a resumable checkpoint contract. Adding checkpoint/resume would be a separate runtime-resilience change.
+- The approximately one-hour target is not yet validated. Voting Auction may still dominate runtime at 700-1000 tasks even after MILP/ACO/Hungarian local solves are removed.
+- Process parallelism increases peak memory. The default of four workers and receiver batch size four is intentionally bounded, but a lower `--workers` or `--voter-batch-size` may be required on memory-constrained Macs.
+- macOS process startup and BLAS behavior depend on the installed Python/NumPy/SciPy stack; actual scaling must be measured on the user's environment.
+- Static Regret-2 is a fixed-priority heuristic, not dynamic regret recomputation; the paper must use the exact method name/definition.
+- Global/Sequential/Static-Regret local proposals can legitimately become infeasible under packet loss and tight capacity. This is measured through `valid_proposal_rate_percent` rather than repaired with a hidden fallback.
+- Formal output is still written after `run_experiment` finishes; checkpoint/resume is not part of this change.
+- The existing one-page placeholder draft still mentions the previously considered optimizer set and must be synchronized before final submission after the new results are available.
 
 ### Next step
-On the Windows machine, pull the new ten-point default and first reproduce the largest-point timing boundary:
+Pull the new code on the Mac and run the new serial smoke:
 
-```powershell
+```bash
 git pull
-python run_multitask_peer_cost_all_optimizers.py --tasks 1000 --trials 1 --max-voters 1 --voter-batch-size 1 --include-milp --include-aco
+
+time python run_multitask_peer_cost_all_optimizers.py \
+  --tasks 100 500 1000 \
+  --trials 1 \
+  --max-voters 5 \
+  --workers 1
 ```
 
-Then run the ten-point low-cost machine benchmark:
+If that passes, measure the actual all-voter parallel path:
 
-```powershell
-python run_multitask_peer_cost_all_optimizers.py --trials 1 --max-voters 5 --voter-batch-size 1 --include-milp --include-aco
+```bash
+time python run_multitask_peer_cost_all_optimizers.py \
+  --tasks 100 500 1000 \
+  --trials 2 \
+  --workers 4
 ```
 
-If the measured Windows runtime is acceptable, the intended complete formal Experiment 2 command is:
+If the measured extrapolation is within the available budget, run the canonical Experiment 2:
 
-```powershell
-python run_multitask_peer_cost_all_optimizers.py --include-milp --include-aco
+```bash
+time python run_multitask_peer_cost_all_optimizers.py
+```
+
+Canonical no-argument meaning:
+
+```text
+100 robots
+100..1000 tasks by 100
+20 trials per point
+100 voters
+30% directed packet loss
+Sequential Greedy + Global Greedy + Static Regret-2 Greedy + Auction
+Hungarian Oracle reference
+up to 4 trial worker processes
 ```
 
 ### Commit SHA
-- `a5261455fc64fae029f2a42a06c9baeb221d3eb0` - changed the Experiment 2 owner default workload to `100..1000` by `100` and synchronized CLI text.
-- `a34c4364f4c740f389fae6778ca79085b11e6803` - updated canonical Experiment 2 specification and Windows runtime handoff.
-- `08669a1411b9ba2bf591da0b66cce6a27f0c5e66` - synchronized the report experiment suite.
-- continuity update commit: this file's commit.
+- `7148921855d63644dc39bf250acec350ac36e7c7` - added the dedicated fast capacitated heuristic owner.
+- `a9ada9d2afaac53030952ed114df77eacb8e8f5c` - rewrote report-facing Experiment 2 for the fast method set, physical heuristic routing, 20-trial default, and bounded process parallelism.
+- `67aba0cc7394e5e04e5e60ac46ce7151dd0cbf0d` - synchronized the canonical Experiment 2 specification.
+- `83d8651f933f4620d5d47f53a4a1a1ff49131994` - synchronized the report experiment suite.
+- continuity update commit: pending metadata follow-up.
