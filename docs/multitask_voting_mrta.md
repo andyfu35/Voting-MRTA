@@ -41,7 +41,7 @@ Voting Auction
 
 The default command deliberately excludes expensive receiver-local methods.
 
-An optional MILP probe is now available:
+An optional MILP probe is available:
 
 ```bash
 python run_multitask_peer_cost_all_optimizers.py --include-milp ...
@@ -53,7 +53,19 @@ This adds:
 Voting MILP
 ```
 
-without changing the default method set. The MILP algorithm itself remains owned by:
+without changing the default method set.
+
+A MILP-only probe is also available:
+
+```bash
+python run_multitask_peer_cost_all_optimizers.py --only-milp ...
+```
+
+This runs `Voting MILP` as the only Voting optimizer. `Hungarian Oracle` is still computed once per trial only as the full-information minimum-cost evaluation reference needed to calculate cost error. Greedy, Voting Hungarian, and Voting Auction are not run in this mode.
+
+`--include-milp` and `--only-milp` are mutually exclusive.
+
+The MILP algorithm itself remains owned by:
 
 ```text
 run_multitask_optimizer_screening.py::solve_milp_assignment
@@ -103,6 +115,8 @@ All enabled Voting methods receive the same:
 
 No optimizer samples or regenerates its own communication realization.
 
+Because these streams depend on scale/trial rather than method membership, a MILP-only rerun can be compared with a preceding Greedy/Hungarian/Auction run that used the same task count, trial numbers, voter cap, packet-loss rate, and seed.
+
 ## P2P information model
 
 Robot `i` owns its own task-cost row. For receiver `r` and task `j`, directed scalar visibility is sampled independently:
@@ -136,6 +150,8 @@ For each batch:
 5. discard the local views before the next batch.
 
 Batch size changes memory/runtime only. It does not change selected voters, packet-loss samples, proposals, support totals, or consensus for a fixed configuration.
+
+For a 1000-task MILP timing probe, `--voter-batch-size 1` is recommended to reduce peak memory while preserving the same receiver sequence and results.
 
 ## Optimizer routing boundary
 
@@ -194,9 +210,35 @@ python run_multitask_peer_cost_all_optimizers.py \
 
 This is preview data, not canonical full-voter report data.
 
-## Optional MILP timing probe
+## Optional MILP timing probes
 
-Before attempting a dense MILP sweep, first measure a small real run:
+To run only the previously unmeasured MILP Voting method at the largest scale, use a staged timing probe rather than rerunning the already measured default methods.
+
+First measure one 1000-task MILP local-voting trial with very few voters:
+
+```bash
+time python run_multitask_peer_cost_all_optimizers.py \
+  --tasks 1000 \
+  --trials 1 \
+  --max-voters 5 \
+  --voter-batch-size 1 \
+  --only-milp
+```
+
+If that runtime and memory use are acceptable, increase to the same 100-voter preview condition used by the preceding scaling preview:
+
+```bash
+time python run_multitask_peer_cost_all_optimizers.py \
+  --tasks 1000 \
+  --trials 10 \
+  --max-voters 100 \
+  --voter-batch-size 1 \
+  --only-milp
+```
+
+The second command performs `10 x 100 = 1000` receiver-local 1000-by-1000 MILP solves, so it may still be very expensive. The first command is the required timing boundary before attempting it.
+
+The older additive probe remains available when a same-process comparison is desired:
 
 ```bash
 python run_multitask_peer_cost_all_optimizers.py \
@@ -206,16 +248,16 @@ python run_multitask_peer_cost_all_optimizers.py \
   --include-milp
 ```
 
-If this is acceptably fast, increase voter count and scale gradually. Do not start a 1000-scale all-voter MILP sweep before measuring the smaller probe on the target machine.
-
 ## Zero-loss contracts
 
-Before the lossy sweep:
+Before the lossy sweep, only enabled optimizer integrations are checked:
 
-- single-task Greedy must match the Hungarian Oracle;
-- Voting Hungarian must match the Oracle at representative scales;
-- Voting Auction must match the Oracle at representative scales;
-- when `--include-milp` is enabled, Voting MILP is additionally checked against the Oracle on a bounded complete-information integration case up to 50 tasks.
+- if Greedy is enabled, single-task Greedy must match the Hungarian Oracle;
+- if Voting Hungarian is enabled, it must match the Oracle at representative scales;
+- if Voting Auction is enabled, it must match the Oracle at representative scales;
+- if Voting MILP is enabled, it is checked against the Oracle on a bounded complete-information integration case up to 50 tasks.
+
+Therefore `--only-milp` skips the Greedy/Hungarian/Auction preflight solves and performs only the bounded MILP integration gate plus the Oracle calculation required by that gate.
 
 The bounded MILP gate deliberately avoids turning preflight into a million-variable 1000-task MILP. Larger lossy MILP cases remain measured experiment points rather than preflight checks.
 
@@ -299,7 +341,9 @@ The x-axis represents matched system scale (`robots = simultaneous tasks`), not 
 
 Runs using `--max-voters` measure a capped-voter preview and must not be described as full-voter scaling.
 
-MILP scaling claims are allowed only for runs that explicitly enabled `--include-milp` and completed successfully.
+MILP scaling claims are allowed only for runs that explicitly enabled `--include-milp` or `--only-milp` and completed successfully.
+
+A `--only-milp` result contains the Oracle reference plus Voting MILP only; it is intended for adding the previously unmeasured MILP point/curve to a separately generated paired preview, not for claiming an in-file multi-method comparison by itself.
 
 ACO scaling claims are not supported by this experiment yet.
 
