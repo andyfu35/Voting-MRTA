@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -50,9 +52,12 @@ METHOD_LABELS = {
     "p2p_aco_ls": "Voting ACO + Local Search",
 }
 EXISTING_P2P_METHODS = ("p2p_greedy", "p2p_hungarian", "p2p_auction")
+PARALLEL_RECEIVER_METHODS = ("p2p_milp", "p2p_aco_ls")
 EXACT_P2P_METHODS = ("p2p_hungarian", "p2p_auction", "p2p_milp")
 ACO_SEED_OFFSET = 7_000_003
 ACO_RECEIVER_SEED_STEP = 10_000_019
+DEFAULT_PARALLEL_WORKERS = min(4, max(1, os.cpu_count() or 1))
+DEFAULT_PROGRESS_EVERY_RECEIVERS = 25
 
 ROOT = Path(__file__).resolve().parent
 RESULT_DIR = ROOT / "results" / "multitask_peer_cost_all_optimizers"
@@ -75,6 +80,24 @@ def cost_match_tolerance_percent(method: str) -> float:
     if method in METHODS:
         return OPTIMAL_COST_TOLERANCE_PERCENT
     fail("cost_match_tolerance_percent", "contract", "UNKNOWN_METHOD", f"method={method}")
+
+
+def validate_parallel_config(parallel_workers: int, progress_every_receivers: int) -> None:
+    """Validate receiver-parallel runtime controls without changing experiment semantics."""
+    if parallel_workers <= 0:
+        fail(
+            "validate_parallel_config",
+            "contract",
+            "INVALID_PARALLEL_WORKERS",
+            f"expected>=1 actual={parallel_workers}",
+        )
+    if progress_every_receivers <= 0:
+        fail(
+            "validate_parallel_config",
+            "contract",
+            "INVALID_PROGRESS_INTERVAL",
+            f"expected>=1 actual={progress_every_receivers}",
+        )
 
 
 def aco_receiver_seed(*, seed: int, task_count: int, trial: int, receiver: int) -> int:
@@ -128,6 +151,215 @@ def validate_local_proposal(
         )
 
 
+def solve_receiver_local_proposal(
+    *,
+    method: str,
+    receiver: int,
+    local_costs: np.ndarray,
+    task_order: np.ndarray,
+    seed: int,
+    task_count: int,
+    trial: int,
+    aco_config: ACOConfig,
+) -> tuple[int, np.ndarray | None]:
+    """Solve one heavy receiver-local MILP or ACO proposal in an isolated worker."""
+    if method == "p2p_milp":
+        proposal = solve_milp_assignment(local_costs)
+    elif method == "p2p_aco_ls":
+        local_rng = np.random.default_rng(
+            aco_receiver_seed(
+                seed=seed,
+                task_count=task_count,
+                trial=trial,
+                receiver=receiver,
+            )
+        )
+        proposal = solve_aco_assignment(local_costs, task_order, local_rng, aco_config)
+    else:
+        fail(
+            "solve_receiver_local_proposal",
+            "contract",
+            "UNKNOWN_PARALLEL_METHOD",
+            f"method={method}",
+        )
+    return receiver, proposal
+
+
+def store_receiver_proposal(
+    *,
+    method: str,
+    receiver: int,
+    receiver_costs: np.ndarray,
+    proposal: np.ndarray | None,
+    proposals: np.ndarray,
+    valid: np.ndarray,
+) -> None:
+    """Validate and store one receiver proposal without repairing invalid results."""
+    if proposal is None:
+        return
+    validate_local_proposal(
+        method=method,
+        receiver=receiver,
+        local_costs=receiver_costs[receiver],
+        proposal=proposal,
+    )
+    proposals[receiver] = proposal
+    valid[receiver] = True
+
+
+def report_receiver_progress(
+    *,
+    method: str,
+    task_count: int,
+    trial: int,
+    completed: int,
+    total: int,
+) -> None:
+    """Show liveness for heavy receiver-local solves without affecting solver state."""
+    end = "\n" if completed >= total else "\r"
+    print(
+        f"tasks={task_count:3d} trial={trial:3d} "
+        f"{METHOD_LABELS[method]} receivers={completed:3d}/{total}",
+        end=end,
+        flush=True,
+    )
+
+
+def solve_serial_receiver_proposals(
+    *,
+    method: str,
+    receiver_costs: np.ndarray,
+    task_order: np.ndarray,
+    seed: int,
+    task_count: int,
+    trial: int,
+    aco_config: ACOConfig,
+    progress_every_receivers: int,
+    show_progress: bool,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Reference serial execution for heavy receiver-local optimizer proposals."""
+    receiver_count = receiver_costs.shape[0]
+    proposals = np.full((receiver_count, task_count), -1, dtype=int)
+    valid = np.zeros(receiver_count, dtype=bool)
+    for receiver in range(receiver_count):
+        resolved_receiver, proposal = solve_receiver_local_proposal(
+            method=method,
+            receiver=receiver,
+            local_costs=receiver_costs[receiver],
+            task_order=task_order,
+            seed=seed,
+            task_count=task_count,
+            trial=trial,
+            aco_config=aco_config,
+        )
+        store_receiver_proposal(
+            method=method,
+            receiver=resolved_receiver,
+            receiver_costs=receiver_costs,
+            proposal=proposal,
+            proposals=proposals,
+            valid=valid,
+        )
+        completed = receiver + 1
+        if show_progress and (
+            completed % progress_every_receivers == 0 or completed == receiver_count
+        ):
+            report_receiver_progress(
+                method=method,
+                task_count=task_count,
+                trial=trial,
+                completed=completed,
+                total=receiver_count,
+            )
+    return proposals, valid
+
+
+def solve_parallel_receiver_proposals(
+    *,
+    method: str,
+    receiver_costs: np.ndarray,
+    task_order: np.ndarray,
+    seed: int,
+    task_count: int,
+    trial: int,
+    aco_config: ACOConfig,
+    executor: ProcessPoolExecutor,
+    progress_every_receivers: int,
+    show_progress: bool,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Execute independent receiver-local MILP/ACO solves across persistent processes."""
+    if method not in PARALLEL_RECEIVER_METHODS:
+        fail(
+            "solve_parallel_receiver_proposals",
+            "contract",
+            "UNKNOWN_PARALLEL_METHOD",
+            f"method={method}",
+        )
+
+    receiver_count = receiver_costs.shape[0]
+    proposals = np.full((receiver_count, task_count), -1, dtype=int)
+    valid = np.zeros(receiver_count, dtype=bool)
+    future_receivers = {}
+    for receiver in range(receiver_count):
+        future = executor.submit(
+            solve_receiver_local_proposal,
+            method=method,
+            receiver=receiver,
+            local_costs=receiver_costs[receiver],
+            task_order=task_order,
+            seed=seed,
+            task_count=task_count,
+            trial=trial,
+            aco_config=aco_config,
+        )
+        future_receivers[future] = receiver
+
+    completed = 0
+    for future in as_completed(future_receivers):
+        expected_receiver = future_receivers[future]
+        try:
+            receiver, proposal = future.result()
+        except ValueError:
+            raise
+        except Exception as exc:
+            fail(
+                "solve_parallel_receiver_proposals",
+                "runtime",
+                "PARALLEL_RECEIVER_SOLVE_FAILED",
+                (
+                    f"method={method} tasks={task_count} trial={trial} "
+                    f"receiver={expected_receiver} error={type(exc).__name__}:{exc}"
+                ),
+            )
+        if receiver != expected_receiver:
+            fail(
+                "solve_parallel_receiver_proposals",
+                "state",
+                "WORKER_RECEIVER_MISMATCH",
+                f"expected={expected_receiver} actual={receiver}",
+            )
+        store_receiver_proposal(
+            method=method,
+            receiver=receiver,
+            receiver_costs=receiver_costs,
+            proposal=proposal,
+            proposals=proposals,
+            valid=valid,
+        )
+        completed += 1
+        if show_progress and (
+            completed % progress_every_receivers == 0 or completed == receiver_count
+        ):
+            report_receiver_progress(
+                method=method,
+                task_count=task_count,
+                trial=trial,
+                completed=completed,
+                total=receiver_count,
+            )
+    return proposals, valid
+
+
 def solve_extended_local_optimizer_proposals(
     *,
     method: str,
@@ -137,8 +369,11 @@ def solve_extended_local_optimizer_proposals(
     task_count: int,
     trial: int,
     aco_config: ACOConfig,
+    executor: ProcessPoolExecutor | None,
+    progress_every_receivers: int,
+    show_progress: bool,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Produce one receiver-local proposal batch using the real optimizer owner."""
+    """Route each optimizer family to its existing owner and runtime boundary."""
     if method in EXISTING_P2P_METHODS:
         return solve_local_optimizer_proposals(method, receiver_costs, task_order)
 
@@ -149,7 +384,7 @@ def solve_extended_local_optimizer_proposals(
             "INVALID_RECEIVER_COST_SHAPE",
             f"shape={receiver_costs.shape}",
         )
-    receiver_count, _, actual_task_count = receiver_costs.shape
+    _, _, actual_task_count = receiver_costs.shape
     if actual_task_count != task_count:
         fail(
             "solve_extended_local_optimizer_proposals",
@@ -157,42 +392,38 @@ def solve_extended_local_optimizer_proposals(
             "TASK_COUNT_MISMATCH",
             f"expected={task_count} actual={actual_task_count}",
         )
-
-    proposals = np.full((receiver_count, task_count), -1, dtype=int)
-    valid = np.zeros(receiver_count, dtype=bool)
-    for receiver in range(receiver_count):
-        local_costs = receiver_costs[receiver]
-        if method == "p2p_milp":
-            proposal = solve_milp_assignment(local_costs)
-        elif method == "p2p_aco_ls":
-            local_rng = np.random.default_rng(
-                aco_receiver_seed(
-                    seed=seed,
-                    task_count=task_count,
-                    trial=trial,
-                    receiver=receiver,
-                )
-            )
-            proposal = solve_aco_assignment(local_costs, task_order, local_rng, aco_config)
-        else:
-            fail(
-                "solve_extended_local_optimizer_proposals",
-                "contract",
-                "UNKNOWN_METHOD",
-                f"method={method}",
-            )
-
-        if proposal is None:
-            continue
-        validate_local_proposal(
-            method=method,
-            receiver=receiver,
-            local_costs=local_costs,
-            proposal=proposal,
+    if method not in PARALLEL_RECEIVER_METHODS:
+        fail(
+            "solve_extended_local_optimizer_proposals",
+            "contract",
+            "UNKNOWN_METHOD",
+            f"method={method}",
         )
-        proposals[receiver] = proposal
-        valid[receiver] = True
-    return proposals, valid
+
+    if executor is None:
+        return solve_serial_receiver_proposals(
+            method=method,
+            receiver_costs=receiver_costs,
+            task_order=task_order,
+            seed=seed,
+            task_count=task_count,
+            trial=trial,
+            aco_config=aco_config,
+            progress_every_receivers=progress_every_receivers,
+            show_progress=show_progress,
+        )
+    return solve_parallel_receiver_proposals(
+        method=method,
+        receiver_costs=receiver_costs,
+        task_order=task_order,
+        seed=seed,
+        task_count=task_count,
+        trial=trial,
+        aco_config=aco_config,
+        executor=executor,
+        progress_every_receivers=progress_every_receivers,
+        show_progress=show_progress,
+    )
 
 
 def optimizer_consensus_assignment(
@@ -205,6 +436,9 @@ def optimizer_consensus_assignment(
     task_count: int,
     trial: int,
     aco_config: ACOConfig,
+    executor: ProcessPoolExecutor | None,
+    progress_every_receivers: int,
+    show_progress: bool,
 ) -> tuple[np.ndarray, float]:
     """Run one optimizer proposal batch through the shared Voting consensus."""
     proposals, valid = solve_extended_local_optimizer_proposals(
@@ -215,13 +449,21 @@ def optimizer_consensus_assignment(
         task_count=task_count,
         trial=trial,
         aco_config=aco_config,
+        executor=executor,
+        progress_every_receivers=progress_every_receivers,
+        show_progress=show_progress,
     )
     support = build_assignment_support(proposals, valid, receiver_costs.shape[1])
     assignment = solve_support_consensus(support, tie_priority)
     return assignment, 100.0 * float(valid.mean())
 
 
-def validate_zero_loss_optimizer_contract(seed: int, aco_config: ACOConfig) -> None:
+def validate_zero_loss_optimizer_contract(
+    seed: int,
+    aco_config: ACOConfig,
+    executor: ProcessPoolExecutor | None,
+    progress_every_receivers: int,
+) -> None:
     """Require exact optimizer families to recover the oracle with complete data."""
     rng = np.random.default_rng(seed + 99_173)
     for task_count in (1, 5, 50, 100):
@@ -254,6 +496,9 @@ def validate_zero_loss_optimizer_contract(seed: int, aco_config: ACOConfig) -> N
                 task_count=task_count,
                 trial=0,
                 aco_config=aco_config,
+                executor=executor,
+                progress_every_receivers=progress_every_receivers,
+                show_progress=False,
             )
             if valid_rate != 100.0:
                 fail(
@@ -317,6 +562,8 @@ def run_trial(
     rng: np.random.Generator,
     seed: int,
     aco_config: ACOConfig,
+    executor: ProcessPoolExecutor | None,
+    progress_every_receivers: int,
 ) -> list[dict[str, object]]:
     """Generate one paired P2P scenario once and run every optimizer on it."""
     costs = generate_spatial_cost_matrix(ROBOT_COUNT, task_count, rng)
@@ -353,6 +600,9 @@ def run_trial(
             task_count=task_count,
             trial=trial,
             aco_config=aco_config,
+            executor=executor,
+            progress_every_receivers=progress_every_receivers,
+            show_progress=method in PARALLEL_RECEIVER_METHODS,
         )
         records.append(
             evaluate_assignment(
@@ -387,6 +637,27 @@ def summarize_results(raw: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def create_receiver_executor(parallel_workers: int) -> ProcessPoolExecutor | None:
+    """Create the persistent process pool used only for independent heavy receiver solves."""
+    if parallel_workers == 1:
+        return None
+    try:
+        return ProcessPoolExecutor(max_workers=parallel_workers)
+    except Exception as exc:
+        fail(
+            "create_receiver_executor",
+            "runtime",
+            "PARALLEL_EXECUTOR_START_FAILED",
+            f"workers={parallel_workers} error={type(exc).__name__}:{exc}",
+        )
+
+
+def shutdown_receiver_executor(executor: ProcessPoolExecutor | None) -> None:
+    """Shut down the persistent receiver process pool after the sweep or first failure."""
+    if executor is not None:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+
 def run_experiment(
     *,
     task_counts: tuple[int, ...] = TASK_COUNTS,
@@ -394,36 +665,59 @@ def run_experiment(
     packet_loss_rate: float = PACKET_LOSS_RATE,
     seed: int = RANDOM_SEED,
     aco_config: ACOConfig = ACOConfig(),
+    parallel_workers: int = DEFAULT_PARALLEL_WORKERS,
+    progress_every_receivers: int = DEFAULT_PROGRESS_EVERY_RECEIVERS,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Run the paired 100-robot all-optimizer Voting sweep."""
     validate_experiment_config(ROBOT_COUNT, packet_loss_rate, task_counts, trials)
     validate_aco_config(aco_config)
-    validate_zero_loss_optimizer_contract(seed, aco_config)
-    print(
-        "Zero-loss optimizer contract: PASS "
-        "(Hungarian/Auction/MILP match oracle; single-task Greedy matches oracle)"
-    )
+    validate_parallel_config(parallel_workers, progress_every_receivers)
 
-    records: list[dict[str, object]] = []
-    for task_count in task_counts:
-        # Keep the exact legacy P2P scenario RNG schedule so the existing
-        # Greedy/Hungarian/Auction columns remain directly reproducible.
-        rng = np.random.default_rng(seed + task_count * 100_003)
-        for trial in range(1, trials + 1):
-            records.extend(
-                run_trial(
-                    task_count=task_count,
-                    trial=trial,
-                    packet_loss_rate=packet_loss_rate,
-                    rng=rng,
-                    seed=seed,
-                    aco_config=aco_config,
+    executor = create_receiver_executor(parallel_workers)
+    try:
+        validate_zero_loss_optimizer_contract(
+            seed,
+            aco_config,
+            executor,
+            progress_every_receivers,
+        )
+        print(
+            "Zero-loss optimizer contract: PASS "
+            "(Hungarian/Auction/MILP match oracle; single-task Greedy matches oracle)"
+        )
+        print(
+            f"Receiver-local runtime: workers={parallel_workers} "
+            f"(MILP/ACO only; scenario RNG and solver parameters unchanged)"
+        )
+
+        records: list[dict[str, object]] = []
+        for task_count in task_counts:
+            # Keep the exact legacy P2P scenario RNG schedule so the existing
+            # Greedy/Hungarian/Auction columns remain directly reproducible.
+            rng = np.random.default_rng(seed + task_count * 100_003)
+            for trial in range(1, trials + 1):
+                print(
+                    f"tasks={task_count:3d}/{max(task_counts)} trial={trial:3d}/{trials} start",
+                    flush=True,
                 )
-            )
-        print(f"tasks={task_count:3d}/{max(task_counts)} complete")
+                records.extend(
+                    run_trial(
+                        task_count=task_count,
+                        trial=trial,
+                        packet_loss_rate=packet_loss_rate,
+                        rng=rng,
+                        seed=seed,
+                        aco_config=aco_config,
+                        executor=executor,
+                        progress_every_receivers=progress_every_receivers,
+                    )
+                )
+            print(f"tasks={task_count:3d}/{max(task_counts)} complete")
 
-    raw = pd.DataFrame.from_records(records)
-    return raw, summarize_results(raw)
+        raw = pd.DataFrame.from_records(records)
+        return raw, summarize_results(raw)
+    finally:
+        shutdown_receiver_executor(executor)
 
 
 def ensure_output_dirs() -> None:
@@ -515,6 +809,21 @@ def parse_args() -> argparse.Namespace:
         help="Directed P2P loss probability (default: 0.30).",
     )
     parser.add_argument("--seed", type=int, default=RANDOM_SEED)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=DEFAULT_PARALLEL_WORKERS,
+        help=(
+            "Process workers for receiver-local MILP/ACO solves. "
+            f"Default: {DEFAULT_PARALLEL_WORKERS}; use 1 for serial regression."
+        ),
+    )
+    parser.add_argument(
+        "--progress-every-receivers",
+        type=int,
+        default=DEFAULT_PROGRESS_EVERY_RECEIVERS,
+        help="Print MILP/ACO receiver progress every N completed solves (default: 25).",
+    )
     parser.add_argument("--aco-ants", type=int, default=ACOConfig.ants)
     parser.add_argument("--aco-iterations", type=int, default=ACOConfig.iterations)
     parser.add_argument("--aco-alpha", type=float, default=ACOConfig.alpha)
@@ -545,6 +854,8 @@ def main() -> None:
         packet_loss_rate=args.packet_loss,
         seed=args.seed,
         aco_config=aco_config,
+        parallel_workers=args.workers,
+        progress_every_receivers=args.progress_every_receivers,
     )
     save_outputs(raw, summary)
 
