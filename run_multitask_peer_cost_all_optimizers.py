@@ -65,8 +65,17 @@ def cost_match_tolerance_percent(method: str) -> float:
     fail("cost_match_tolerance_percent", "contract", "UNKNOWN_METHOD", f"method={method}")
 
 
-def resolve_voting_methods(include_milp: bool) -> tuple[str, ...]:
-    """Resolve the default fast methods plus an explicitly requested MILP probe."""
+def resolve_voting_methods(include_milp: bool, only_milp: bool) -> tuple[str, ...]:
+    """Resolve the enabled Voting optimizer set without changing default behavior."""
+    if include_milp and only_milp:
+        fail(
+            "resolve_voting_methods",
+            "contract",
+            "CONFLICTING_METHOD_FLAGS",
+            "--include-milp and --only-milp cannot be used together",
+        )
+    if only_milp:
+        return OPTIONAL_VOTING_METHODS
     if include_milp:
         return DEFAULT_VOTING_METHODS + OPTIONAL_VOTING_METHODS
     return DEFAULT_VOTING_METHODS
@@ -382,81 +391,93 @@ def validate_zero_loss_optimizer_contract(
     max_task_count: int,
     voting_methods: tuple[str, ...],
 ) -> None:
-    """Check exact optimizer integrations without turning preflight into a large MILP run."""
-    single_rng = np.random.default_rng(seed + 91_001)
-    single_costs = generate_spatial_cost_matrix(5, 1, single_rng)
-    single_order = np.array([0], dtype=int)
-    single_tie = single_rng.random((5, 1))
-    single_oracle = solve_hungarian_assignment(single_costs)
-    if single_oracle is None:
-        fail("validate_zero_loss_optimizer_contract", "planning", "ORACLE_INFEASIBLE", "robots=5 tasks=1")
-    single_oracle_cost = assignment_total_cost(single_costs, single_oracle)
-    greedy, _ = solve_zero_loss_consensus(
-        method="p2p_greedy",
-        costs=single_costs,
-        task_order=single_order,
-        tie_priority=single_tie,
-    )
-    greedy_cost = assignment_total_cost(single_costs, greedy)
-    greedy_gap = 100.0 * (greedy_cost - single_oracle_cost) / single_oracle_cost
-    if abs(greedy_gap) > OPTIMAL_COST_TOLERANCE_PERCENT:
-        fail(
-            "validate_zero_loss_optimizer_contract",
-            "planning",
-            "ZERO_LOSS_NOT_ORACLE_CONSISTENT",
-            f"method=p2p_greedy robots=5 tasks=1 actual_gap_percent={greedy_gap}",
-        )
-
-    representative_sizes = sorted(
-        {
-            min(50, max_task_count),
-            min(200, max_task_count),
-            max_task_count,
-        }
-    )
-    for size in representative_sizes:
-        if size < 2:
-            continue
-        rng = np.random.default_rng(seed + 91_173 + size * 100_003)
-        costs = generate_spatial_cost_matrix(size, size, rng)
-        task_order = rng.permutation(size)
-        tie_priority = rng.random((size, size))
-        oracle = solve_hungarian_assignment(costs)
-        if oracle is None:
+    """Check only the enabled optimizer integrations before the lossy sweep."""
+    if "p2p_greedy" in voting_methods:
+        single_rng = np.random.default_rng(seed + 91_001)
+        single_costs = generate_spatial_cost_matrix(5, 1, single_rng)
+        single_order = np.array([0], dtype=int)
+        single_tie = single_rng.random((5, 1))
+        single_oracle = solve_hungarian_assignment(single_costs)
+        if single_oracle is None:
             fail(
                 "validate_zero_loss_optimizer_contract",
                 "planning",
                 "ORACLE_INFEASIBLE",
-                f"robots={size} tasks={size}",
+                "robots=5 tasks=1",
             )
-        oracle_cost = assignment_total_cost(costs, oracle)
-        for method in ("p2p_hungarian", "p2p_auction"):
-            assignment, valid_rate = solve_zero_loss_consensus(
-                method=method,
-                costs=costs,
-                task_order=task_order,
-                tie_priority=tie_priority,
+        single_oracle_cost = assignment_total_cost(single_costs, single_oracle)
+        greedy, _ = solve_zero_loss_consensus(
+            method="p2p_greedy",
+            costs=single_costs,
+            task_order=single_order,
+            tie_priority=single_tie,
+        )
+        greedy_cost = assignment_total_cost(single_costs, greedy)
+        greedy_gap = 100.0 * (greedy_cost - single_oracle_cost) / single_oracle_cost
+        if abs(greedy_gap) > OPTIMAL_COST_TOLERANCE_PERCENT:
+            fail(
+                "validate_zero_loss_optimizer_contract",
+                "planning",
+                "ZERO_LOSS_NOT_ORACLE_CONSISTENT",
+                f"method=p2p_greedy robots=5 tasks=1 actual_gap_percent={greedy_gap}",
             )
-            if valid_rate != 100.0:
+
+    exact_default_methods = tuple(
+        method
+        for method in ("p2p_hungarian", "p2p_auction")
+        if method in voting_methods
+    )
+    if exact_default_methods:
+        representative_sizes = sorted(
+            {
+                min(50, max_task_count),
+                min(200, max_task_count),
+                max_task_count,
+            }
+        )
+        for size in representative_sizes:
+            if size < 2:
+                continue
+            rng = np.random.default_rng(seed + 91_173 + size * 100_003)
+            costs = generate_spatial_cost_matrix(size, size, rng)
+            task_order = rng.permutation(size)
+            tie_priority = rng.random((size, size))
+            oracle = solve_hungarian_assignment(costs)
+            if oracle is None:
                 fail(
                     "validate_zero_loss_optimizer_contract",
                     "planning",
-                    "ZERO_LOSS_PROPOSAL_FAILURE",
-                    f"method={method} robots={size} tasks={size} valid_rate={valid_rate}",
+                    "ORACLE_INFEASIBLE",
+                    f"robots={size} tasks={size}",
                 )
-            actual_cost = assignment_total_cost(costs, assignment)
-            gap_percent = 100.0 * (actual_cost - oracle_cost) / oracle_cost
-            if abs(gap_percent) > OPTIMAL_COST_TOLERANCE_PERCENT:
-                fail(
-                    "validate_zero_loss_optimizer_contract",
-                    "planning",
-                    "ZERO_LOSS_NOT_ORACLE_CONSISTENT",
-                    (
-                        f"method={method} robots={size} tasks={size} "
-                        f"expected_abs_gap_percent<={OPTIMAL_COST_TOLERANCE_PERCENT} "
-                        f"actual={gap_percent}"
-                    ),
+            oracle_cost = assignment_total_cost(costs, oracle)
+            for method in exact_default_methods:
+                assignment, valid_rate = solve_zero_loss_consensus(
+                    method=method,
+                    costs=costs,
+                    task_order=task_order,
+                    tie_priority=tie_priority,
                 )
+                if valid_rate != 100.0:
+                    fail(
+                        "validate_zero_loss_optimizer_contract",
+                        "planning",
+                        "ZERO_LOSS_PROPOSAL_FAILURE",
+                        f"method={method} robots={size} tasks={size} valid_rate={valid_rate}",
+                    )
+                actual_cost = assignment_total_cost(costs, assignment)
+                gap_percent = 100.0 * (actual_cost - oracle_cost) / oracle_cost
+                if abs(gap_percent) > OPTIMAL_COST_TOLERANCE_PERCENT:
+                    fail(
+                        "validate_zero_loss_optimizer_contract",
+                        "planning",
+                        "ZERO_LOSS_NOT_ORACLE_CONSISTENT",
+                        (
+                            f"method={method} robots={size} tasks={size} "
+                            f"expected_abs_gap_percent<={OPTIMAL_COST_TOLERANCE_PERCENT} "
+                            f"actual={gap_percent}"
+                        ),
+                    )
 
     if "p2p_milp" in voting_methods:
         size = min(MILP_ZERO_LOSS_CHECK_MAX_SIZE, max_task_count)
@@ -659,6 +680,7 @@ def run_experiment(
     voter_batch_size: int = DEFAULT_VOTER_BATCH_SIZE,
     progress_every_voters: int = DEFAULT_PROGRESS_EVERY_VOTERS,
     include_milp: bool = False,
+    only_milp: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Run the matched robot/task scaling sweep through 1000 tasks."""
     validate_scaling_config(
@@ -669,15 +691,9 @@ def run_experiment(
         voter_batch_size=voter_batch_size,
         progress_every_voters=progress_every_voters,
     )
-    voting_methods = resolve_voting_methods(include_milp)
+    voting_methods = resolve_voting_methods(include_milp, only_milp)
     validate_zero_loss_optimizer_contract(seed, max(task_counts), voting_methods)
-    gate_methods = "Hungarian/Auction"
-    if include_milp:
-        gate_methods += "/MILP"
-    print(
-        "Zero-loss optimizer contract: PASS "
-        f"({gate_methods} match Oracle under their numerical contracts; single-task Greedy matches Oracle)"
-    )
+    print("Zero-loss optimizer contract: PASS (enabled methods passed their numerical contracts)")
     print("Experiment 2 scaling: robot_count == task_count")
     print("Voting methods: " + ", ".join(METHOD_LABELS[method] for method in voting_methods))
     print(
@@ -837,7 +853,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Scale the lossy P2P Voting experiment to matched robot/task counts through 1000. "
-            "Greedy, Hungarian, and Auction are enabled by default; MILP is an optional probe."
+            "Greedy, Hungarian, and Auction are enabled by default; MILP can be added or run alone."
         )
     )
     parser.add_argument(
@@ -887,6 +903,14 @@ def parse_args() -> argparse.Namespace:
             "because MILP is slower than the default three methods."
         ),
     )
+    parser.add_argument(
+        "--only-milp",
+        action="store_true",
+        help=(
+            "Run Voting MILP as the only Voting optimizer while retaining the Hungarian Oracle "
+            "only as the minimum-cost evaluation reference."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -902,6 +926,7 @@ def main() -> None:
         voter_batch_size=args.voter_batch_size,
         progress_every_voters=args.progress_every_voters,
         include_milp=args.include_milp,
+        only_milp=args.only_milp,
     )
     save_outputs(raw, summary)
 
