@@ -28,7 +28,7 @@ from run_multitask_peer_cost_experiment import (
 )
 
 FIXED_ROBOT_COUNT = 100
-WORKLOAD_TASK_COUNTS = tuple(range(50, 1001, 50))
+WORKLOAD_TASK_COUNTS = tuple(range(100, 1001, 100))
 MAX_TASK_COUNT = 1000
 DEFAULT_VOTING_METHODS = ("p2p_greedy", "p2p_hungarian", "p2p_auction")
 MILP_VOTING_METHODS = ("p2p_milp",)
@@ -1099,7 +1099,7 @@ def run_experiment(
     include_aco: bool = False,
     aco_config: ACOConfig = ACOConfig(),
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Run the fixed-100-robot, 50-to-1000 task-batch Experiment 2 sweep."""
+    """Run the fixed-100-robot, 100-to-1000 task-batch Experiment 2 sweep."""
     validate_workload_config(
         task_counts=task_counts,
         trials=trials,
@@ -1289,7 +1289,7 @@ def parse_task_counts(values: list[int] | None) -> tuple[int, ...]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run lossy P2P Voting with 100 fixed robots and task batches from 50 to 1000. "
+            "Run lossy P2P Voting with 100 fixed robots and task batches from 100 to 1000. "
             "Uniform per-robot batch capacity is ceil(tasks/100)."
         )
     )
@@ -1299,7 +1299,7 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help=(
-            "Task batch sizes. Default: 50 100 150 ... 1000. "
+            "Task batch sizes. Default: 100 200 300 ... 1000. "
             "The physical robot count remains fixed at 100."
         ),
     )
