@@ -106,3 +106,137 @@ Run the full paired ablation with the canonical command and verify that Voting H
 - `fdc5099d74f5e79e682230fe34c47492de905fbc` - added `run_multitask_voting_ablation.py`
 - `04a172b1dc0ca69095d04d827b48927414738b8a` - added canonical ablation specification
 - `41647907d7f2b4c6049a9979de774c3f60d14041` - archived prior continuity and recorded this ablation
+
+## 2026-09-04 - Multi-Task Optimizer Family Screening
+
+### Purpose
+Screen the user-selected optimizer families before integrating another expensive solver into the lossy P2P Voting path. Robust Optimization is deliberately excluded for now. The bounded question is pure optimizer behavior under increasing multi-task load, without packet loss or proposal consensus confounding the result.
+
+Compared methods:
+- `Hungarian` - specialized exact linear assignment reference.
+- `MILP` - general binary mixed-integer linear programming formulation of the same capacity-one assignment problem.
+- `ACO + Local Search` - stochastic ant-colony construction with explicitly named local replacement/swap refinement.
+- `Greedy Baseline` - existing sequential heuristic baseline, retained only for context.
+
+Pre-change protocol lookup reconfirmed that repository-root `AGENTS.md` and `docs/AI_CHANGE_PROTOCOL.md` are absent; `docs/CHANGE_CONTINUITY.md`, `docs/multitask_voting_mrta.md`, and the actual canonical owner functions in `run_multitask_peer_cost_experiment.py` were read before implementation.
+
+### Files
+- `run_multitask_optimizer_screening.py`
+- `docs/multitask_optimizer_screening.md`
+- `docs/CHANGE_CONTINUITY.md`
+
+### Owner and named functions
+New bounded owner: `run_multitask_optimizer_screening.py`.
+
+- screening diagnostic boundary: `fail`
+- ACO parameter contract: `validate_aco_config`
+- cached MILP structural model: `build_milp_assignment_model`
+- MILP optimizer owner: `solve_milp_assignment`
+- ACO candidate boundary: `select_aco_candidates`
+- one-ant construction owner: `construct_aco_assignment`
+- ACO local refinement owner: `improve_aco_assignment_locally`
+- ACO optimizer owner: `solve_aco_assignment`
+- result evaluation: `evaluate_method`
+- exact-solver gate: `validate_exact_optimizer_contract`
+- paired trial owner: `run_trial`
+- aggregation: `summarize_results`
+- sweep owner: `run_experiment`
+- report table: `report_table`
+- persistence/plots: `save_outputs`, `save_metric_plot`
+
+Shared owners imported rather than copied from `run_multitask_peer_cost_experiment.py`:
+- `generate_spatial_cost_matrix`
+- `solve_hungarian_assignment`
+- `solve_sequential_greedy`
+- `assignment_total_cost`
+- `validate_experiment_config`
+
+### Responsibility movement
+No existing owner was modified and no state machine was copied.
+
+This screening intentionally does not run one optimizer per P2P receiver. It evaluates one complete-information assignment problem per paired trial so the first experiment isolates optimizer quality and runtime. This avoids multiplying MILP/ACO work by 100 receivers before knowing whether the methods are worth integrating.
+
+MILP owns only the general exact mathematical-programming solve. ACO construction and ACO local refinement are separate named functions. The local refinement is not hidden under a generic `ACO` label; the report label is explicitly `ACO + Local Search`.
+
+### Preserved behavior
+- fleet size remains 100 robots.
+- task counts remain `5,10,20,30,40,50,60,70,80,90,100`.
+- default trials remain 100 per task-count/method point.
+- same normalized 2-D Euclidean spatial cost owner and positive cost floor.
+- same one-task-per-robot simultaneous capacity.
+- same Hungarian implementation and assignment feasibility/cost diagnostics.
+- no Robust Optimization uncertainty model is introduced.
+- previous P2P optimizer, Voting ablation, single-task, and Auction experiments remain unchanged and reproducible.
+
+### Deliberately added behavior
+This screening disables packet loss and Voting/consensus. It adds optimizer runtime as a primary supporting metric because Hungarian and MILP are expected to have identical solution quality on the present linear assignment formulation.
+
+MILP formulation:
+
+```text
+x_ij in {0,1}
+sum_i x_ij = 1   for each task j
+sum_j x_ij <= 1  for each robot i
+minimize sum_ij C_ij x_ij
+```
+
+MILP uses `scipy.optimize.milp` / HiGHS. Shape-only sparse constraints are cached across repeated trials.
+
+ACO fixed default search budget:
+
+```text
+ants = 12
+iterations = 15
+alpha = 1.0
+beta = 3.0
+evaporation = 0.20
+candidate_list_size = 20
+elite_weight = 2.0
+local_search_moves = 25
+```
+
+ACO construction uses pheromone and inverse-cost desirability. The bounded local-search owner then applies unused-robot replacements and task-pair robot swaps only when they reduce total cost. These ACO parameters are fixed across task counts and can be changed only through explicit CLI sensitivity runs.
+
+### Diagnostic contract
+- `contract`: invalid ACO controls or cost/model shapes fail at `validate_aco_config`, `build_milp_assignment_model`, `solve_milp_assignment`, or `solve_aco_assignment`.
+- `data`: non-finite optimizer-screening costs fail as `NONFINITE_MILP_COST` or `NONFINITE_ACO_COST`; this experiment intentionally requires complete information.
+- `planning`: infeasible solver results fail at `run_trial` with method-specific codes; MILP disagreement with Hungarian fails as `MILP_NOT_EXACT`.
+- exact pre-sweep contract: `validate_exact_optimizer_contract` checks tasks `1,5,50,100` and requires MILP total cost to equal Hungarian within the existing tolerance.
+- ACO is stochastic and is not required to match Hungarian.
+
+### Evaluation metrics
+- `average_optimality_gap_percent`
+- `optimal_cost_match_percent`
+- `near_optimal_5pct_percent`
+- `exact_optimal_assignment_percent`
+- `average_runtime_ms`
+- `median_runtime_ms`
+
+Hungarian defines the exact optimal-cost reference for the screening.
+
+### Validation performed
+- Python compilation passed for `run_multitask_optimizer_screening.py` in a local interface-compatible harness.
+- Exact optimizer contract passed for tasks `1,5,50,100`: MILP matched Hungarian cost.
+- 3-trial smoke sweep passed for tasks `5,20,100`.
+- Smoke average gaps were approximately:
+  - tasks 5: Hungarian `0%`, MILP `0%`, ACO+Local Search `0%`, Greedy `0%`.
+  - tasks 20: Hungarian `0%`, MILP `0%`, ACO+Local Search `0%`, Greedy `3.20%`.
+  - tasks 100: Hungarian `0%`, MILP `0%`, ACO+Local Search `2.54%`, Greedy `25.56%`.
+- In the same 100-task smoke, ACO+Local Search was near-optimal within 5% in all 3 trials.
+- Approximate 100-task smoke runtimes on the validation environment were Hungarian `0.39 ms`, MILP `95 ms`, ACO+Local Search `484 ms`, Greedy `0.46 ms` per solve. Runtime is environment-dependent and these values are validation diagnostics, not formal report results.
+- A separate 20-trial prototype check at tasks `20,50,100` produced ACO average gaps of about `0.014%`, `0.073%`, and `2.17%`; all 20 task-100 ACO solutions were within 5% of Hungarian. These prototype numbers are not the canonical 100-trial dataset.
+
+### Known limitations / unfinished risks
+- Full 100-trial canonical screening has not yet been run on the user's repository environment.
+- MILP is mathematically expected to duplicate Hungarian solution quality in this simple formulation; its useful distinction here is runtime/general modeling flexibility, not a different optimum.
+- `ACO + Local Search` is a hybrid stochastic metaheuristic, not a pure Ant System implementation; the method label and canonical document state this explicitly.
+- ACO performance depends on its fixed search budget. Changing ant count, iterations, or local-search moves creates a sensitivity experiment and must not be mixed into the canonical dataset.
+- Screening has no packet loss or Voting. No claim about communication robustness should be made from these results.
+
+### Next step
+Run the canonical 100-trial screening on the user's machine. Inspect optimal-cost match, average gap, near-optimal rate, and runtime. Only after that result should MILP and/or ACO be promoted into a separate lossy P2P Voting comparison.
+
+### Commit SHA
+- `d3fb0d7143cd0367585dc95305a5417fc162458f` - added `run_multitask_optimizer_screening.py`
+- `a8dd3bdf243b3fe63d666a012802c9739e23fba7` - added canonical optimizer-screening specification
+- continuity update commit: this file's commit
