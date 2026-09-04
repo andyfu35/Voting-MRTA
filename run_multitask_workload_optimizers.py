@@ -139,9 +139,7 @@ def solve_min_cost_flow_capacitated(
     edge_starts = 1 + robot_indices.astype(np.int64)
     edge_ends = 1 + robot_count + task_indices.astype(np.int64)
     edge_caps = np.ones(robot_indices.size, dtype=np.int64)
-    edge_costs = np.rint(costs[robot_indices, task_indices] * MIN_COST_FLOW_COST_SCALE).astype(
-        np.int64
-    )
+    edge_costs = quantize_min_cost_flow_costs(costs)
 
     sink_starts = task_nodes
     sink_ends = np.full(task_count, sink, dtype=np.int64)
