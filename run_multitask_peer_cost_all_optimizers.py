@@ -1,21 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import os
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from run_multitask_optimizer_screening import (
-    ACOConfig,
-    MILP_NUMERICAL_TOLERANCE_PERCENT,
-    solve_aco_assignment,
-    solve_milp_assignment,
-    validate_aco_config,
-)
 from run_multitask_peer_cost_experiment import (
-    DEFAULT_TRIALS,
     NEAR_OPTIMAL_GAP_PERCENT,
     OPTIMAL_COST_TOLERANCE_PERCENT,
     PACKET_LOSS_RATE,
@@ -26,41 +20,48 @@ from run_multitask_peer_cost_experiment import (
     solve_local_optimizer_proposals,
     solve_support_consensus,
 )
+from run_multitask_workload_heuristics import (
+    CAPACITATED_HEURISTIC_METHODS,
+    solve_capacitated_heuristic_batch,
+)
 
 FIXED_ROBOT_COUNT = 100
 WORKLOAD_TASK_COUNTS = tuple(range(100, 1001, 100))
 MAX_TASK_COUNT = 1000
-DEFAULT_VOTING_METHODS = ("p2p_greedy", "p2p_hungarian", "p2p_auction")
-MILP_VOTING_METHODS = ("p2p_milp",)
-ACO_VOTING_METHODS = ("p2p_aco_ls",)
-REPORT_METHOD_ORDER = (
-    "oracle",
-    *DEFAULT_VOTING_METHODS,
-    *MILP_VOTING_METHODS,
-    *ACO_VOTING_METHODS,
-)
+FORMAL_TRIALS = 20
+AUCTION_METHOD = "p2p_auction"
+DEFAULT_VOTING_METHODS = (*CAPACITATED_HEURISTIC_METHODS, AUCTION_METHOD)
+REPORT_METHOD_ORDER = ("oracle",) + DEFAULT_VOTING_METHODS
 METHOD_LABELS = {
     "oracle": "Hungarian Oracle",
-    "p2p_greedy": "Voting Greedy",
-    "p2p_hungarian": "Voting Hungarian",
+    "p2p_sequential_greedy": "Voting Sequential Greedy",
+    "p2p_global_greedy": "Voting Global Greedy",
+    "p2p_regret2_greedy": "Voting Static Regret-2 Greedy",
     "p2p_auction": "Voting Auction",
-    "p2p_milp": "Voting MILP",
-    "p2p_aco_ls": "Voting ACO + Local Search",
 }
-DEFAULT_VOTER_BATCH_SIZE = 8
+DEFAULT_VOTER_BATCH_SIZE = 4
 DEFAULT_PROGRESS_EVERY_VOTERS = 25
+DEFAULT_PARALLEL_WORKERS = max(1, min(4, os.cpu_count() or 1))
 VOTER_SELECTION_SEED_OFFSET = 2_000_003
 VISIBILITY_SEED_OFFSET = 4_000_007
-ACO_SEED_OFFSET = 6_000_011
-RECEIVER_ACO_SEED_STRIDE = 1_000_003
-MILP_ZERO_LOSS_CHECK_MAX_TASKS = 100
-ACO_ZERO_LOSS_CHECK_MAX_TASKS = 150
-EXACT_ZERO_LOSS_CHECK_MAX_TASKS = 200
+HEURISTIC_ZERO_LOSS_CHECK_MAX_TASKS = 200
+AUCTION_ZERO_LOSS_CHECK_MAX_TASKS = 200
 
 ROOT = Path(__file__).resolve().parent
 RESULT_DIR = ROOT / "results" / "multitask_peer_cost_fixed100_workload"
 DATA_DIR = RESULT_DIR / "data"
 FIGURE_DIR = RESULT_DIR / "figures"
+
+
+@dataclass(frozen=True)
+class TrialJob:
+    task_count: int
+    trial: int
+    packet_loss_rate: float
+    seed: int
+    max_voters: int | None
+    voter_batch_size: int
+    progress_every_voters: int
 
 
 def fail(function: str, category: str, code: str, details: str) -> None:
@@ -72,37 +73,15 @@ def fail(function: str, category: str, code: str, details: str) -> None:
 
 
 def cost_match_tolerance_percent(method: str) -> float:
-    """Return the objective-match tolerance owned by each active optimizer family."""
-    if method == "p2p_milp":
-        return MILP_NUMERICAL_TOLERANCE_PERCENT
+    """Return the objective-match tolerance for report metrics."""
     if method in REPORT_METHOD_ORDER:
         return OPTIMAL_COST_TOLERANCE_PERCENT
     fail("cost_match_tolerance_percent", "contract", "UNKNOWN_METHOD", f"method={method}")
 
 
-def resolve_voting_methods(
-    *,
-    include_milp: bool,
-    only_milp: bool,
-    include_aco: bool,
-) -> tuple[str, ...]:
-    """Resolve enabled optimizers while preserving the previous fast default set."""
-    if only_milp and (include_milp or include_aco):
-        fail(
-            "resolve_voting_methods",
-            "contract",
-            "CONFLICTING_METHOD_FLAGS",
-            "--only-milp cannot be combined with --include-milp or --include-aco",
-        )
-    if only_milp:
-        return MILP_VOTING_METHODS
-
-    methods = list(DEFAULT_VOTING_METHODS)
-    if include_milp:
-        methods.extend(MILP_VOTING_METHODS)
-    if include_aco:
-        methods.extend(ACO_VOTING_METHODS)
-    return tuple(methods)
+def resolve_voting_methods() -> tuple[str, ...]:
+    """Return the canonical one-hour-oriented Voting optimizer set."""
+    return DEFAULT_VOTING_METHODS
 
 
 def validate_workload_config(
@@ -113,8 +92,9 @@ def validate_workload_config(
     max_voters: int | None,
     voter_batch_size: int,
     progress_every_voters: int,
+    workers: int,
 ) -> None:
-    """Validate the fixed-100-robot workload sweep and runtime controls."""
+    """Validate fixed-fleet workload, sampling, batching, and parallel runtime controls."""
     if not task_counts:
         fail("validate_workload_config", "contract", "EMPTY_TASK_COUNTS", "task_counts is empty")
     if any(task_count <= 0 for task_count in task_counts):
@@ -161,6 +141,13 @@ def validate_workload_config(
             "INVALID_PROGRESS_INTERVAL",
             f"expected>=1 actual={progress_every_voters}",
         )
+    if workers <= 0:
+        fail(
+            "validate_workload_config",
+            "contract",
+            "INVALID_WORKER_COUNT",
+            f"expected>=1 actual={workers}",
+        )
 
 
 def resolve_robot_capacity(task_count: int, robot_count: int = FIXED_ROBOT_COUNT) -> int:
@@ -176,7 +163,7 @@ def resolve_robot_capacity(task_count: int, robot_count: int = FIXED_ROBOT_COUNT
 
 
 def build_capacity_slot_cost_matrix(costs: np.ndarray, capacity_per_robot: int) -> np.ndarray:
-    """Represent uniform robot capacity as repeated capacity-one assignment slots."""
+    """Represent uniform physical-robot capacity as repeated capacity-one assignment slots."""
     if costs.ndim != 2:
         fail(
             "build_capacity_slot_cost_matrix",
@@ -198,7 +185,7 @@ def build_capacity_slot_cost_views(
     receiver_costs: np.ndarray,
     capacity_per_robot: int,
 ) -> np.ndarray:
-    """Expand receiver-local robot rows into identical capacity-one slot rows."""
+    """Expand receiver-local physical robot rows only for the capacity-one Auction owner."""
     if receiver_costs.ndim != 3:
         fail(
             "build_capacity_slot_cost_views",
@@ -222,7 +209,7 @@ def map_slot_assignments_to_robots(
     robot_count: int,
     capacity_per_robot: int,
 ) -> np.ndarray:
-    """Map capacity-slot indices back to physical robot indices without repairing invalid rows."""
+    """Map capacity-slot indices back to physical robot IDs without repairing invalid rows."""
     if slot_assignments.ndim not in (1, 2):
         fail(
             "map_slot_assignments_to_robots",
@@ -254,7 +241,7 @@ def validate_capacity_assignment(
     assignment: np.ndarray,
     capacity_per_robot: int,
 ) -> None:
-    """Validate one physical-robot assignment under the fixed-fleet batch-capacity contract."""
+    """Validate one physical assignment under the fixed-fleet batch-capacity contract."""
     if costs.ndim != 2:
         fail(
             "validate_capacity_assignment",
@@ -313,7 +300,7 @@ def assignment_total_cost_with_capacity(
 
 
 def solve_capacity_oracle(costs: np.ndarray, capacity_per_robot: int) -> np.ndarray | None:
-    """Solve the fixed-fleet capacitated reference via the existing Hungarian owner on slots."""
+    """Solve the full-information capacitated minimum via the existing Hungarian owner."""
     slot_costs = build_capacity_slot_cost_matrix(costs, capacity_per_robot)
     slot_assignment = solve_hungarian_assignment(slot_costs)
     if slot_assignment is None:
@@ -338,7 +325,7 @@ def select_voter_indices(
     voter_count: int,
     rng: np.random.Generator,
 ) -> np.ndarray:
-    """Select physical receiver identities whose proposals participate in Voting."""
+    """Select physical receiver IDs whose local proposals participate in Voting."""
     if voter_count <= 0 or voter_count > robot_count:
         fail(
             "select_voter_indices",
@@ -381,7 +368,7 @@ def sample_voter_batch_visibility(
 
 
 def build_voter_batch_cost_views(costs: np.ndarray, visibility: np.ndarray) -> np.ndarray:
-    """Materialize only the current receiver batch's incomplete physical-robot cost matrices."""
+    """Materialize only the current receiver batch's incomplete physical cost matrices."""
     if costs.ndim != 2:
         fail(
             "build_voter_batch_cost_views",
@@ -399,93 +386,38 @@ def build_voter_batch_cost_views(costs: np.ndarray, visibility: np.ndarray) -> n
     return np.where(visibility, costs[None, :, :], np.inf)
 
 
-def solve_milp_batch_proposals(slot_receiver_costs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Run the true MILP owner once per receiver-local capacity-slot matrix."""
-    if slot_receiver_costs.ndim != 3:
-        fail(
-            "solve_milp_batch_proposals",
-            "contract",
-            "INVALID_BATCH_COST_SHAPE",
-            f"shape={slot_receiver_costs.shape}",
-        )
-    receiver_count, _, task_count = slot_receiver_costs.shape
-    proposals = np.full((receiver_count, task_count), -1, dtype=int)
-    valid = np.zeros(receiver_count, dtype=bool)
-    for receiver in range(receiver_count):
-        proposal = solve_milp_assignment(slot_receiver_costs[receiver])
-        if proposal is None:
-            continue
-        proposals[receiver] = proposal
-        valid[receiver] = True
-    return proposals, valid
-
-
-def solve_aco_batch_proposals(
-    *,
-    slot_receiver_costs: np.ndarray,
-    task_order: np.ndarray,
-    receiver_indices: np.ndarray,
-    aco_seed: int,
-    aco_config: ACOConfig,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Run the true ACO owner with a deterministic per-physical-receiver RNG stream."""
-    if slot_receiver_costs.ndim != 3:
-        fail(
-            "solve_aco_batch_proposals",
-            "contract",
-            "INVALID_BATCH_COST_SHAPE",
-            f"shape={slot_receiver_costs.shape}",
-        )
-    receiver_count, _, task_count = slot_receiver_costs.shape
-    if receiver_indices.shape != (receiver_count,):
-        fail(
-            "solve_aco_batch_proposals",
-            "contract",
-            "RECEIVER_BATCH_SHAPE_MISMATCH",
-            f"expected={(receiver_count,)} actual={receiver_indices.shape}",
-        )
-    proposals = np.full((receiver_count, task_count), -1, dtype=int)
-    valid = np.zeros(receiver_count, dtype=bool)
-    for local_index, receiver_index in enumerate(receiver_indices):
-        receiver_rng = np.random.default_rng(
-            aco_seed + int(receiver_index) * RECEIVER_ACO_SEED_STRIDE
-        )
-        proposal = solve_aco_assignment(
-            slot_receiver_costs[local_index],
-            task_order,
-            receiver_rng,
-            aco_config,
-        )
-        if proposal is None:
-            continue
-        proposals[local_index] = proposal
-        valid[local_index] = True
-    return proposals, valid
-
-
-def solve_slot_voter_batch_proposals(
+def solve_voter_batch_proposals(
     *,
     method: str,
-    slot_receiver_costs: np.ndarray,
+    receiver_costs: np.ndarray,
     task_order: np.ndarray,
-    receiver_indices: np.ndarray,
-    aco_seed: int,
-    aco_config: ACOConfig,
+    capacity_per_robot: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Route capacity-slot matrices to the existing optimizer-family owners."""
-    if method in DEFAULT_VOTING_METHODS:
-        return solve_local_optimizer_proposals(method, slot_receiver_costs, task_order)
-    if method == "p2p_milp":
-        return solve_milp_batch_proposals(slot_receiver_costs)
-    if method == "p2p_aco_ls":
-        return solve_aco_batch_proposals(
-            slot_receiver_costs=slot_receiver_costs,
+    """Route local physical views to fast heuristics or the existing Auction owner."""
+    if method in CAPACITATED_HEURISTIC_METHODS:
+        return solve_capacitated_heuristic_batch(
+            method=method,
+            receiver_costs=receiver_costs,
             task_order=task_order,
-            receiver_indices=receiver_indices,
-            aco_seed=aco_seed,
-            aco_config=aco_config,
+            capacity_per_robot=capacity_per_robot,
         )
-    fail("solve_slot_voter_batch_proposals", "contract", "UNKNOWN_METHOD", f"method={method}")
+    if method == AUCTION_METHOD:
+        slot_receiver_costs = build_capacity_slot_cost_views(
+            receiver_costs,
+            capacity_per_robot,
+        )
+        slot_proposals, valid = solve_local_optimizer_proposals(
+            "p2p_auction",
+            slot_receiver_costs,
+            task_order,
+        )
+        proposals = map_slot_assignments_to_robots(
+            slot_proposals,
+            robot_count=receiver_costs.shape[1],
+            capacity_per_robot=capacity_per_robot,
+        )
+        return proposals, valid
+    fail("solve_voter_batch_proposals", "contract", "UNKNOWN_METHOD", f"method={method}")
 
 
 def accumulate_proposal_support(
@@ -495,7 +427,7 @@ def accumulate_proposal_support(
     valid: np.ndarray,
     robot_count: int,
 ) -> int:
-    """Accumulate physical-robot proposal support for one voter batch."""
+    """Accumulate physical robot/task support for one voter batch."""
     valid_count = int(valid.sum())
     if valid_count == 0:
         return 0
@@ -511,7 +443,7 @@ def report_voter_progress(
     completed: int,
     total: int,
 ) -> None:
-    """Report receiver-batch progress without affecting experiment state."""
+    """Report receiver progress only in single-worker diagnostic mode."""
     end = "\n" if completed >= total else "\r"
     print(
         f"robots={FIXED_ROBOT_COUNT:3d} tasks={task_count:4d} "
@@ -529,15 +461,14 @@ def collect_voting_support(
     voter_indices: np.ndarray,
     task_order: np.ndarray,
     visibility_rng: np.random.Generator,
-    aco_seed: int,
-    aco_config: ACOConfig,
     voter_batch_size: int,
     progress_every_voters: int,
     task_count: int,
     trial: int,
     voting_methods: tuple[str, ...],
+    emit_progress: bool,
 ) -> tuple[dict[str, np.ndarray], dict[str, int]]:
-    """Stream physical receiver views, solve slot assignments, and accumulate robot support."""
+    """Stream physical receiver views and accumulate proposal support for each method."""
     robot_count = costs.shape[0]
     support_by_method = {
         method: np.zeros((robot_count, task_count), dtype=np.int32)
@@ -557,23 +488,12 @@ def collect_voting_support(
             rng=visibility_rng,
         )
         receiver_costs = build_voter_batch_cost_views(costs, visibility)
-        slot_receiver_costs = build_capacity_slot_cost_views(
-            receiver_costs,
-            capacity_per_robot,
-        )
 
         for method in voting_methods:
-            slot_proposals, valid = solve_slot_voter_batch_proposals(
+            proposals, valid = solve_voter_batch_proposals(
                 method=method,
-                slot_receiver_costs=slot_receiver_costs,
+                receiver_costs=receiver_costs,
                 task_order=task_order,
-                receiver_indices=receiver_batch,
-                aco_seed=aco_seed,
-                aco_config=aco_config,
-            )
-            proposals = map_slot_assignments_to_robots(
-                slot_proposals,
-                robot_count=robot_count,
                 capacity_per_robot=capacity_per_robot,
             )
             valid_counts[method] += accumulate_proposal_support(
@@ -584,7 +504,7 @@ def collect_voting_support(
             )
 
         completed = min(start + len(receiver_batch), total_voters)
-        if completed >= next_progress or completed == total_voters:
+        if emit_progress and (completed >= next_progress or completed == total_voters):
             report_voter_progress(
                 task_count=task_count,
                 trial=trial,
@@ -603,7 +523,7 @@ def build_capacity_slot_consensus_inputs(
     tie_priority: np.ndarray,
     capacity_per_robot: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Expand physical-robot support/tie rows into capacity-one consensus slots."""
+    """Expand physical support/tie rows into capacity-one consensus slots."""
     if support.shape != tie_priority.shape:
         fail(
             "build_capacity_slot_consensus_inputs",
@@ -630,7 +550,7 @@ def solve_capacity_support_consensus(
     tie_priority: np.ndarray,
     capacity_per_robot: int,
 ) -> np.ndarray:
-    """Run the existing support-consensus owner on capacity slots, then map to robots."""
+    """Run the existing support-consensus owner on slots, then map back to physical robots."""
     slot_support, slot_tie_priority = build_capacity_slot_consensus_inputs(
         support=support,
         tie_priority=tie_priority,
@@ -655,7 +575,7 @@ def finalize_voting_assignments(
     trial: int,
     voting_methods: tuple[str, ...],
 ) -> dict[str, tuple[np.ndarray, float]]:
-    """Convert accumulated support into one capacity-feasible physical assignment per method."""
+    """Convert proposal support into one capacity-feasible physical assignment per method."""
     results: dict[str, tuple[np.ndarray, float]] = {}
     for method in voting_methods:
         valid_count = valid_counts[method]
@@ -682,19 +602,13 @@ def solve_zero_loss_consensus(
     capacity_per_robot: int,
     task_order: np.ndarray,
     tie_priority: np.ndarray,
-    aco_seed: int,
-    aco_config: ACOConfig,
 ) -> tuple[np.ndarray, float]:
-    """Pass one complete-information proposal through the same capacity Voting boundary."""
-    receiver_costs = costs[None, :, :]
-    slot_receiver_costs = build_capacity_slot_cost_views(receiver_costs, capacity_per_robot)
-    slot_proposals, valid = solve_slot_voter_batch_proposals(
+    """Pass one complete-information proposal through the same Voting consensus boundary."""
+    proposals, valid = solve_voter_batch_proposals(
         method=method,
-        slot_receiver_costs=slot_receiver_costs,
+        receiver_costs=costs[None, :, :],
         task_order=task_order,
-        receiver_indices=np.array([0], dtype=int),
-        aco_seed=aco_seed,
-        aco_config=aco_config,
+        capacity_per_robot=capacity_per_robot,
     )
     if not bool(valid[0]):
         fail(
@@ -703,11 +617,6 @@ def solve_zero_loss_consensus(
             "ZERO_LOSS_PROPOSAL_FAILURE",
             f"method={method} shape={costs.shape} capacity={capacity_per_robot}",
         )
-    proposals = map_slot_assignments_to_robots(
-        slot_proposals,
-        robot_count=costs.shape[0],
-        capacity_per_robot=capacity_per_robot,
-    )
     support = build_assignment_support(proposals, valid, costs.shape[0])
     assignment = solve_capacity_support_consensus(
         support=support,
@@ -717,192 +626,98 @@ def solve_zero_loss_consensus(
     return assignment, 100.0
 
 
-def validate_zero_loss_optimizer_contract(
-    *,
-    seed: int,
-    max_task_count: int,
-    voting_methods: tuple[str, ...],
-    aco_config: ACOConfig,
-) -> None:
-    """Check enabled optimizer integrations at bounded fixed-fleet capacity cases."""
-    if "p2p_greedy" in voting_methods:
-        rng = np.random.default_rng(seed + 91_001)
-        costs = generate_spatial_cost_matrix(FIXED_ROBOT_COUNT, 1, rng)
-        task_order = np.array([0], dtype=int)
-        tie_priority = rng.random((FIXED_ROBOT_COUNT, 1))
-        capacity_per_robot = resolve_robot_capacity(1)
-        oracle = solve_capacity_oracle(costs, capacity_per_robot)
-        if oracle is None:
-            fail(
-                "validate_zero_loss_optimizer_contract",
-                "planning",
-                "ORACLE_INFEASIBLE",
-                "robots=100 tasks=1",
-            )
-        oracle_cost = assignment_total_cost_with_capacity(costs, oracle, capacity_per_robot)
-        assignment, _ = solve_zero_loss_consensus(
-            method="p2p_greedy",
-            costs=costs,
-            capacity_per_robot=capacity_per_robot,
-            task_order=task_order,
-            tie_priority=tie_priority,
-            aco_seed=seed + ACO_SEED_OFFSET,
-            aco_config=aco_config,
-        )
-        actual_cost = assignment_total_cost_with_capacity(costs, assignment, capacity_per_robot)
-        gap_percent = 100.0 * (actual_cost - oracle_cost) / oracle_cost
-        if abs(gap_percent) > OPTIMAL_COST_TOLERANCE_PERCENT:
-            fail(
-                "validate_zero_loss_optimizer_contract",
-                "planning",
-                "ZERO_LOSS_NOT_ORACLE_CONSISTENT",
-                f"method=p2p_greedy tasks=1 actual_gap_percent={gap_percent}",
-            )
-
-    exact_default_methods = tuple(
-        method
-        for method in ("p2p_hungarian", "p2p_auction")
-        if method in voting_methods
+def validate_zero_loss_heuristic_contracts(seed: int, max_task_count: int) -> None:
+    """Require every fast heuristic to return a valid capacitated proposal with complete data."""
+    check_tasks = sorted(
+        {
+            min(100, max_task_count),
+            min(HEURISTIC_ZERO_LOSS_CHECK_MAX_TASKS, max_task_count),
+        }
     )
-    if exact_default_methods:
-        check_tasks = sorted(
-            {
-                min(50, max_task_count),
-                min(150, max_task_count),
-                min(EXACT_ZERO_LOSS_CHECK_MAX_TASKS, max_task_count),
-            }
-        )
-        for task_count in check_tasks:
-            if task_count <= 0:
-                continue
-            rng = np.random.default_rng(seed + 91_173 + task_count * 100_003)
-            costs = generate_spatial_cost_matrix(FIXED_ROBOT_COUNT, task_count, rng)
-            capacity_per_robot = resolve_robot_capacity(task_count)
-            task_order = rng.permutation(task_count)
-            tie_priority = rng.random((FIXED_ROBOT_COUNT, task_count))
-            oracle = solve_capacity_oracle(costs, capacity_per_robot)
-            if oracle is None:
-                fail(
-                    "validate_zero_loss_optimizer_contract",
-                    "planning",
-                    "ORACLE_INFEASIBLE",
-                    f"robots=100 tasks={task_count} capacity={capacity_per_robot}",
-                )
-            oracle_cost = assignment_total_cost_with_capacity(costs, oracle, capacity_per_robot)
-            for method in exact_default_methods:
-                assignment, valid_rate = solve_zero_loss_consensus(
-                    method=method,
-                    costs=costs,
-                    capacity_per_robot=capacity_per_robot,
-                    task_order=task_order,
-                    tie_priority=tie_priority,
-                    aco_seed=seed + ACO_SEED_OFFSET + task_count,
-                    aco_config=aco_config,
-                )
-                if valid_rate != 100.0:
-                    fail(
-                        "validate_zero_loss_optimizer_contract",
-                        "planning",
-                        "ZERO_LOSS_PROPOSAL_FAILURE",
-                        f"method={method} tasks={task_count} valid_rate={valid_rate}",
-                    )
-                actual_cost = assignment_total_cost_with_capacity(
-                    costs,
-                    assignment,
-                    capacity_per_robot,
-                )
-                gap_percent = 100.0 * (actual_cost - oracle_cost) / oracle_cost
-                if abs(gap_percent) > OPTIMAL_COST_TOLERANCE_PERCENT:
-                    fail(
-                        "validate_zero_loss_optimizer_contract",
-                        "planning",
-                        "ZERO_LOSS_NOT_ORACLE_CONSISTENT",
-                        (
-                            f"method={method} robots=100 tasks={task_count} "
-                            f"capacity={capacity_per_robot} actual_gap_percent={gap_percent}"
-                        ),
-                    )
-
-    if "p2p_milp" in voting_methods:
-        task_count = min(MILP_ZERO_LOSS_CHECK_MAX_TASKS, max_task_count)
-        if task_count > 0:
-            rng = np.random.default_rng(seed + 191_173 + task_count * 100_003)
-            costs = generate_spatial_cost_matrix(FIXED_ROBOT_COUNT, task_count, rng)
-            capacity_per_robot = resolve_robot_capacity(task_count)
-            task_order = rng.permutation(task_count)
-            tie_priority = rng.random((FIXED_ROBOT_COUNT, task_count))
-            oracle = solve_capacity_oracle(costs, capacity_per_robot)
-            if oracle is None:
-                fail(
-                    "validate_zero_loss_optimizer_contract",
-                    "planning",
-                    "ORACLE_INFEASIBLE",
-                    f"method=p2p_milp tasks={task_count}",
-                )
-            oracle_cost = assignment_total_cost_with_capacity(costs, oracle, capacity_per_robot)
+    for task_count in check_tasks:
+        if task_count <= 0:
+            continue
+        rng = np.random.default_rng(seed + 191_173 + task_count * 100_003)
+        costs = generate_spatial_cost_matrix(FIXED_ROBOT_COUNT, task_count, rng)
+        capacity_per_robot = resolve_robot_capacity(task_count)
+        task_order = rng.permutation(task_count)
+        tie_priority = rng.random((FIXED_ROBOT_COUNT, task_count))
+        for method in CAPACITATED_HEURISTIC_METHODS:
             assignment, valid_rate = solve_zero_loss_consensus(
-                method="p2p_milp",
+                method=method,
                 costs=costs,
                 capacity_per_robot=capacity_per_robot,
                 task_order=task_order,
                 tie_priority=tie_priority,
-                aco_seed=seed + ACO_SEED_OFFSET + task_count,
-                aco_config=aco_config,
             )
             if valid_rate != 100.0:
                 fail(
-                    "validate_zero_loss_optimizer_contract",
+                    "validate_zero_loss_heuristic_contracts",
                     "planning",
                     "ZERO_LOSS_PROPOSAL_FAILURE",
-                    f"method=p2p_milp tasks={task_count} valid_rate={valid_rate}",
-                )
-            actual_cost = assignment_total_cost_with_capacity(
-                costs,
-                assignment,
-                capacity_per_robot,
-            )
-            gap_percent = 100.0 * (actual_cost - oracle_cost) / oracle_cost
-            if abs(gap_percent) > MILP_NUMERICAL_TOLERANCE_PERCENT:
-                fail(
-                    "validate_zero_loss_optimizer_contract",
-                    "planning",
-                    "ZERO_LOSS_NOT_ORACLE_CONSISTENT",
-                    (
-                        f"method=p2p_milp tasks={task_count} "
-                        f"expected_abs_gap_percent<={MILP_NUMERICAL_TOLERANCE_PERCENT} "
-                        f"actual={gap_percent}"
-                    ),
-                )
-
-    if "p2p_aco_ls" in voting_methods:
-        task_count = min(ACO_ZERO_LOSS_CHECK_MAX_TASKS, max_task_count)
-        if task_count > 0:
-            rng = np.random.default_rng(seed + 291_173 + task_count * 100_003)
-            costs = generate_spatial_cost_matrix(FIXED_ROBOT_COUNT, task_count, rng)
-            capacity_per_robot = resolve_robot_capacity(task_count)
-            task_order = rng.permutation(task_count)
-            tie_priority = rng.random((FIXED_ROBOT_COUNT, task_count))
-            assignment, valid_rate = solve_zero_loss_consensus(
-                method="p2p_aco_ls",
-                costs=costs,
-                capacity_per_robot=capacity_per_robot,
-                task_order=task_order,
-                tie_priority=tie_priority,
-                aco_seed=seed + ACO_SEED_OFFSET + task_count,
-                aco_config=aco_config,
-            )
-            if valid_rate != 100.0:
-                fail(
-                    "validate_zero_loss_optimizer_contract",
-                    "planning",
-                    "ZERO_LOSS_PROPOSAL_FAILURE",
-                    f"method=p2p_aco_ls tasks={task_count} valid_rate={valid_rate}",
+                    f"method={method} tasks={task_count} valid_rate={valid_rate}",
                 )
             validate_capacity_assignment(
                 costs=costs,
                 assignment=assignment,
                 capacity_per_robot=capacity_per_robot,
             )
+
+
+def validate_zero_loss_auction_contract(seed: int, max_task_count: int) -> None:
+    """Require Voting Auction to match the capacitated Hungarian reference with complete data."""
+    check_tasks = sorted(
+        {
+            min(100, max_task_count),
+            min(AUCTION_ZERO_LOSS_CHECK_MAX_TASKS, max_task_count),
+        }
+    )
+    for task_count in check_tasks:
+        if task_count <= 0:
+            continue
+        rng = np.random.default_rng(seed + 291_173 + task_count * 100_003)
+        costs = generate_spatial_cost_matrix(FIXED_ROBOT_COUNT, task_count, rng)
+        capacity_per_robot = resolve_robot_capacity(task_count)
+        task_order = rng.permutation(task_count)
+        tie_priority = rng.random((FIXED_ROBOT_COUNT, task_count))
+        oracle = solve_capacity_oracle(costs, capacity_per_robot)
+        if oracle is None:
+            fail(
+                "validate_zero_loss_auction_contract",
+                "planning",
+                "ORACLE_INFEASIBLE",
+                f"tasks={task_count} capacity={capacity_per_robot}",
+            )
+        oracle_cost = assignment_total_cost_with_capacity(costs, oracle, capacity_per_robot)
+        assignment, valid_rate = solve_zero_loss_consensus(
+            method=AUCTION_METHOD,
+            costs=costs,
+            capacity_per_robot=capacity_per_robot,
+            task_order=task_order,
+            tie_priority=tie_priority,
+        )
+        if valid_rate != 100.0:
+            fail(
+                "validate_zero_loss_auction_contract",
+                "planning",
+                "ZERO_LOSS_PROPOSAL_FAILURE",
+                f"tasks={task_count} valid_rate={valid_rate}",
+            )
+        actual_cost = assignment_total_cost_with_capacity(costs, assignment, capacity_per_robot)
+        gap_percent = 100.0 * (actual_cost - oracle_cost) / oracle_cost
+        if abs(gap_percent) > OPTIMAL_COST_TOLERANCE_PERCENT:
+            fail(
+                "validate_zero_loss_auction_contract",
+                "planning",
+                "ZERO_LOSS_NOT_ORACLE_CONSISTENT",
+                f"method={AUCTION_METHOD} tasks={task_count} actual_gap_percent={gap_percent}",
+            )
+
+
+def validate_zero_loss_optimizer_contract(seed: int, max_task_count: int) -> None:
+    """Run bounded integration gates for the canonical heuristic and Auction families."""
+    validate_zero_loss_heuristic_contracts(seed, max_task_count)
+    validate_zero_loss_auction_contract(seed, max_task_count)
 
 
 def evaluate_assignment(
@@ -957,9 +772,9 @@ def run_trial(
     voter_batch_size: int,
     progress_every_voters: int,
     voting_methods: tuple[str, ...],
-    aco_config: ACOConfig,
+    emit_voter_progress: bool,
 ) -> list[dict[str, object]]:
-    """Run one paired workload trial with 100 physical robots and uniform batch capacity."""
+    """Run one paired workload trial with deterministic scenario and communication streams."""
     robot_count = FIXED_ROBOT_COUNT
     capacity_per_robot = resolve_robot_capacity(task_count, robot_count)
     voter_count = resolve_voter_count(robot_count, max_voters)
@@ -1001,13 +816,12 @@ def run_trial(
         voter_indices=voter_indices,
         task_order=task_order,
         visibility_rng=visibility_rng,
-        aco_seed=trial_seed + ACO_SEED_OFFSET,
-        aco_config=aco_config,
         voter_batch_size=voter_batch_size,
         progress_every_voters=progress_every_voters,
         task_count=task_count,
         trial=trial,
         voting_methods=voting_methods,
+        emit_progress=emit_voter_progress,
     )
     voting_results = finalize_voting_assignments(
         support_by_method=support_by_method,
@@ -1057,6 +871,105 @@ def run_trial(
     return records
 
 
+def run_trial_job(job: TrialJob) -> list[dict[str, object]]:
+    """Execute one independent trial inside a process worker without console contention."""
+    return run_trial(
+        task_count=job.task_count,
+        trial=job.trial,
+        packet_loss_rate=job.packet_loss_rate,
+        seed=job.seed,
+        max_voters=job.max_voters,
+        voter_batch_size=job.voter_batch_size,
+        progress_every_voters=job.progress_every_voters,
+        voting_methods=resolve_voting_methods(),
+        emit_voter_progress=False,
+    )
+
+
+def build_trial_jobs(
+    *,
+    task_counts: tuple[int, ...],
+    trials: int,
+    packet_loss_rate: float,
+    seed: int,
+    max_voters: int | None,
+    voter_batch_size: int,
+    progress_every_voters: int,
+) -> list[TrialJob]:
+    """Build deterministic independent trial jobs in report order."""
+    return [
+        TrialJob(
+            task_count=task_count,
+            trial=trial,
+            packet_loss_rate=packet_loss_rate,
+            seed=seed,
+            max_voters=max_voters,
+            voter_batch_size=voter_batch_size,
+            progress_every_voters=progress_every_voters,
+        )
+        for task_count in task_counts
+        for trial in range(1, trials + 1)
+    ]
+
+
+def configure_worker_thread_environment(workers: int) -> None:
+    """Avoid nested BLAS/OpenMP oversubscription when process-level parallelism is enabled."""
+    if workers <= 1:
+        return
+    for variable in (
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+    ):
+        os.environ.setdefault(variable, "1")
+
+
+def report_trial_completion(index: int, total: int, job: TrialJob) -> None:
+    """Report parent-owned trial completion without interleaving worker output."""
+    print(
+        f"completed={index:4d}/{total} robots={FIXED_ROBOT_COUNT:3d} "
+        f"tasks={job.task_count:4d} trial={job.trial:3d}",
+        flush=True,
+    )
+
+
+def execute_trial_jobs(
+    jobs: list[TrialJob],
+    *,
+    workers: int,
+) -> list[dict[str, object]]:
+    """Execute independent trial jobs sequentially or through a bounded process pool."""
+    records: list[dict[str, object]] = []
+    total = len(jobs)
+    if workers == 1:
+        for index, job in enumerate(jobs, start=1):
+            records.extend(
+                run_trial(
+                    task_count=job.task_count,
+                    trial=job.trial,
+                    packet_loss_rate=job.packet_loss_rate,
+                    seed=job.seed,
+                    max_voters=job.max_voters,
+                    voter_batch_size=job.voter_batch_size,
+                    progress_every_voters=job.progress_every_voters,
+                    voting_methods=resolve_voting_methods(),
+                    emit_voter_progress=True,
+                )
+            )
+            report_trial_completion(index, total, job)
+        return records
+
+    configure_worker_thread_environment(workers)
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        results = executor.map(run_trial_job, jobs, chunksize=1)
+        for index, (job, result) in enumerate(zip(jobs, results), start=1):
+            records.extend(result)
+            report_trial_completion(index, total, job)
+    return records
+
+
 def summarize_results(raw: pd.DataFrame) -> pd.DataFrame:
     """Aggregate fixed-fleet workload quality and proposal-validity metrics."""
     return (
@@ -1088,18 +1001,15 @@ def summarize_results(raw: pd.DataFrame) -> pd.DataFrame:
 def run_experiment(
     *,
     task_counts: tuple[int, ...] = WORKLOAD_TASK_COUNTS,
-    trials: int = DEFAULT_TRIALS,
+    trials: int = FORMAL_TRIALS,
     packet_loss_rate: float = PACKET_LOSS_RATE,
     seed: int = RANDOM_SEED,
     max_voters: int | None = None,
     voter_batch_size: int = DEFAULT_VOTER_BATCH_SIZE,
     progress_every_voters: int = DEFAULT_PROGRESS_EVERY_VOTERS,
-    include_milp: bool = False,
-    only_milp: bool = False,
-    include_aco: bool = False,
-    aco_config: ACOConfig = ACOConfig(),
+    workers: int = DEFAULT_PARALLEL_WORKERS,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Run the fixed-100-robot, 100-to-1000 task-batch Experiment 2 sweep."""
+    """Run the canonical fixed-100-robot workload sweep with bounded trial parallelism."""
     validate_workload_config(
         task_counts=task_counts,
         trials=trials,
@@ -1107,22 +1017,12 @@ def run_experiment(
         max_voters=max_voters,
         voter_batch_size=voter_batch_size,
         progress_every_voters=progress_every_voters,
+        workers=workers,
     )
-    voting_methods = resolve_voting_methods(
-        include_milp=include_milp,
-        only_milp=only_milp,
-        include_aco=include_aco,
-    )
-    if "p2p_aco_ls" in voting_methods:
-        validate_aco_config(aco_config)
-    validate_zero_loss_optimizer_contract(
-        seed=seed,
-        max_task_count=max(task_counts),
-        voting_methods=voting_methods,
-        aco_config=aco_config,
-    )
+    voting_methods = resolve_voting_methods()
+    validate_zero_loss_optimizer_contract(seed, max(task_counts))
 
-    print("Zero-loss optimizer contract: PASS (enabled methods passed bounded integration checks)")
+    print("Zero-loss optimizer contract: PASS (fast heuristics feasible; Auction exact at bounded checks)")
     print(
         "Experiment 2 workload: robots=100 fixed; "
         "capacity_per_robot=ceil(tasks/100); tasks are batch workload"
@@ -1132,35 +1032,18 @@ def run_experiment(
         "Voting receivers: "
         + ("all 100 robots" if max_voters is None else f"up to {max_voters} sampled robots (preview mode)")
     )
+    print(f"Trials per task point: {trials}; process workers: {workers}")
 
-    records: list[dict[str, object]] = []
-    for task_count in task_counts:
-        voter_count = resolve_voter_count(FIXED_ROBOT_COUNT, max_voters)
-        capacity_per_robot = resolve_robot_capacity(task_count)
-        for trial in range(1, trials + 1):
-            print(
-                f"robots={FIXED_ROBOT_COUNT:3d} tasks={task_count:4d}/{max(task_counts)} "
-                f"capacity={capacity_per_robot:2d} trial={trial:3d}/{trials} "
-                f"voters={voter_count} start",
-                flush=True,
-            )
-            records.extend(
-                run_trial(
-                    task_count=task_count,
-                    trial=trial,
-                    packet_loss_rate=packet_loss_rate,
-                    seed=seed,
-                    max_voters=max_voters,
-                    voter_batch_size=voter_batch_size,
-                    progress_every_voters=progress_every_voters,
-                    voting_methods=voting_methods,
-                    aco_config=aco_config,
-                )
-            )
-        print(
-            f"robots={FIXED_ROBOT_COUNT:3d} tasks={task_count:4d}/{max(task_counts)} complete"
-        )
-
+    jobs = build_trial_jobs(
+        task_counts=task_counts,
+        trials=trials,
+        packet_loss_rate=packet_loss_rate,
+        seed=seed,
+        max_voters=max_voters,
+        voter_batch_size=voter_batch_size,
+        progress_every_voters=progress_every_voters,
+    )
+    records = execute_trial_jobs(jobs, workers=workers)
     raw = pd.DataFrame.from_records(records)
     return raw, summarize_results(raw)
 
@@ -1171,7 +1054,7 @@ def ensure_output_dirs() -> None:
 
 
 def report_table(summary: pd.DataFrame, metric: str) -> pd.DataFrame:
-    """Return one task-batch-by-method table in stable display order."""
+    """Return one task-batch-by-method report table in stable display order."""
     table = summary.pivot(index="tasks", columns="method_label", values=metric)
     labels = [
         METHOD_LABELS[method]
@@ -1242,6 +1125,8 @@ def save_metric_plot(
     y_limits: tuple[float, float] | None = None,
 ) -> None:
     """Save a line-only fixed-fleet workload plot with exact-overlap legend merging."""
+    import matplotlib.pyplot as plt
+
     fig, ax = plt.subplots(figsize=(10, 6))
     for methods, part in build_plot_series_groups(summary, metric):
         ax.plot(part["tasks"], part[metric], label=combine_plot_label(methods))
@@ -1257,7 +1142,7 @@ def save_metric_plot(
 
 
 def save_outputs(raw: pd.DataFrame, summary: pd.DataFrame) -> None:
-    """Persist fixed-100 workload data separately from the superseded matched-scale data."""
+    """Persist fixed-100 workload data generated by the current canonical method set."""
     ensure_output_dirs()
     raw.to_csv(DATA_DIR / "workload_comparison_raw.csv", index=False)
     summary.to_csv(DATA_DIR / "workload_comparison_summary.csv", index=False)
@@ -1289,8 +1174,8 @@ def parse_task_counts(values: list[int] | None) -> tuple[int, ...]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run lossy P2P Voting with 100 fixed robots and task batches from 100 to 1000. "
-            "Uniform per-robot batch capacity is ceil(tasks/100)."
+            "Run the time-budgeted lossy P2P Voting workload experiment with 100 fixed robots, "
+            "100..1000 tasks, fast heuristic local solvers, Voting Auction, and parallel trials."
         )
     )
     parser.add_argument(
@@ -1298,12 +1183,14 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         type=int,
         default=None,
-        help=(
-            "Task batch sizes. Default: 100 200 300 ... 1000. "
-            "The physical robot count remains fixed at 100."
-        ),
+        help="Task batch sizes. Default: 100 200 300 ... 1000; robots remain fixed at 100.",
     )
-    parser.add_argument("--trials", type=int, default=DEFAULT_TRIALS)
+    parser.add_argument(
+        "--trials",
+        type=int,
+        default=FORMAL_TRIALS,
+        help=f"Trials per task point. Canonical time-budgeted default: {FORMAL_TRIALS}.",
+    )
     parser.add_argument(
         "--packet-loss",
         type=float,
@@ -1315,45 +1202,33 @@ def parse_args() -> argparse.Namespace:
         "--max-voters",
         type=int,
         default=None,
-        help=(
-            "Optional preview cap on the 100 physical voting receivers. "
-            "Default: all 100 robots."
-        ),
+        help="Optional preview cap on the 100 physical voters. Default: all 100 robots.",
     )
     parser.add_argument(
         "--voter-batch-size",
         type=int,
         default=DEFAULT_VOTER_BATCH_SIZE,
         help=(
-            "Number of receiver-local physical cost views materialized at once. "
-            f"Default: {DEFAULT_VOTER_BATCH_SIZE}. This changes memory/runtime only."
+            "Receiver-local views handled together inside one trial. "
+            f"Default: {DEFAULT_VOTER_BATCH_SIZE}."
         ),
     )
     parser.add_argument(
         "--progress-every-voters",
         type=int,
         default=DEFAULT_PROGRESS_EVERY_VOTERS,
-        help="Print progress after roughly this many physical voting receivers (default: 25).",
-    )
-    parser.add_argument(
-        "--include-milp",
-        action="store_true",
-        help="Add Voting MILP to the default Greedy/Hungarian/Auction comparison.",
-    )
-    parser.add_argument(
-        "--only-milp",
-        action="store_true",
         help=(
-            "Run Voting MILP as the only Voting optimizer while retaining the capacitated "
-            "Hungarian Oracle only as the minimum-cost reference."
+            "Single-worker diagnostic progress interval. Parallel mode reports completed trials "
+            f"instead. Default: {DEFAULT_PROGRESS_EVERY_VOTERS}."
         ),
     )
     parser.add_argument(
-        "--include-aco",
-        action="store_true",
+        "--workers",
+        type=int,
+        default=DEFAULT_PARALLEL_WORKERS,
         help=(
-            "Add Voting ACO + Local Search using the screening owner's fixed ACOConfig. "
-            "This can be substantially slower than the other methods."
+            "Independent trial worker processes. "
+            f"Default: {DEFAULT_PARALLEL_WORKERS}; use 1 for serial diagnostics."
         ),
     )
     return parser.parse_args()
@@ -1370,9 +1245,7 @@ def main() -> None:
         max_voters=args.max_voters,
         voter_batch_size=args.voter_batch_size,
         progress_every_voters=args.progress_every_voters,
-        include_milp=args.include_milp,
-        only_milp=args.only_milp,
-        include_aco=args.include_aco,
+        workers=args.workers,
     )
     save_outputs(raw, summary)
 
