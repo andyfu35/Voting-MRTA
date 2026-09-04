@@ -7,9 +7,10 @@ This file defines which experiments must be rerun before report writing and whic
 - Use seed `20260903` unless a canonical experiment states otherwise.
 - Use `100` trials per reported configuration.
 - Smoke tests using `3`, `10`, or `20` trials are validation only and must not be mixed into report tables.
-- Within a comparison table, all compared algorithms must use paired scenarios: the same robot/task cost realization and, when communication is modeled, the same packet-loss realization.
-- Robust and multi-objective cost models are excluded from this report cycle.
+- Within a comparison table, all compared algorithms must use paired scenarios: the same robot/task realization and, when communication is modeled, the same packet-loss realization.
+- Robust Optimization and multi-objective success/time/energy cost models are excluded from this report cycle.
 - The scalar task cost remains the existing spatial cost.
+- Partial output from a run that terminates before `save_outputs` is not report data.
 
 ## Experiment 1 - Single-task P2P majority robustness
 
@@ -35,67 +36,24 @@ Authoritative output root:
 results/peer_cost_majority/
 ```
 
-Primary report result:
+Primary result:
 
 ```text
 packet-loss x robot-count optimal execution success
 ```
 
-## Experiment 2 - Complete-information all-optimizer multi-task comparison
+## Experiment 2 - Multi-task lossy P2P Voting across optimizer families
 
 Owner:
 
 ```text
-run_multitask_all_optimizer_experiment.py
+run_multitask_peer_cost_all_optimizers.py
 ```
 
 Canonical run:
 
 ```bash
-python run_multitask_all_optimizer_experiment.py
-```
-
-Compared methods:
-
-```text
-Hungarian
-Auction
-MILP
-ACO + Local Search
-Greedy Baseline
-```
-
-Every `(task_count, trial)` scenario is generated once and shared by all five methods.
-
-Authoritative output root:
-
-```text
-results/multitask_all_optimizer/
-```
-
-Primary report tables:
-
-```text
-average optimality gap
-optimal-cost match
-near-optimal within 5%
-average optimizer runtime
-```
-
-This experiment replaces the older four-method optimizer-screening table as the report-facing optimizer-family table. The older screening results remain valid historical development data but are not the final report table because Auction was absent from that comparison.
-
-## Experiment 3 - Lossy P2P multi-task optimizer comparison
-
-Owner:
-
-```text
-run_multitask_peer_cost_experiment.py
-```
-
-Canonical run:
-
-```bash
-python run_multitask_peer_cost_experiment.py
+python run_multitask_peer_cost_all_optimizers.py
 ```
 
 Controlled condition:
@@ -104,23 +62,33 @@ Controlled condition:
 100 robots
 30% independent directed scalar task-cost packet loss
 100 paired trials per task count
-5..100 simultaneous tasks
+5,10,20,30,40,50,60,70,80,90,100 simultaneous tasks
 ```
 
-Compared report methods currently remain:
+Compared report methods:
 
 ```text
-P2P Greedy
-P2P Hungarian
-P2P Auction
+Hungarian Oracle
+Voting Greedy
+Voting Hungarian
+Voting Auction
+Voting MILP
+Voting ACO + Local Search
 ```
 
-All three methods receive the same cost matrix, packet-loss visibility tensor, task order, and tie-priority realization within each trial.
+For every trial, all five Voting optimizers share the same:
+
+- true cost matrix;
+- packet-loss visibility tensor;
+- task order;
+- consensus tie-priority realization.
+
+ACO alone has an additional deterministic search stream per receiver; that stream never consumes or alters the shared scenario RNG.
 
 Authoritative output root:
 
 ```text
-results/multitask_peer_cost/
+results/multitask_peer_cost_all_optimizers/
 ```
 
 Primary report tables:
@@ -129,10 +97,28 @@ Primary report tables:
 average optimality gap
 optimal-cost match
 near-optimal within 5%
+exact optimal assignment
 valid local proposal rate
 ```
 
-## Experiment 4 - Direct vs Voting ablation
+The preceding three-method owner:
+
+```text
+run_multitask_peer_cost_experiment.py
+```
+
+remains a regression baseline. The new experiment deliberately preserves its scenario RNG schedule, so Voting Greedy/Hungarian/Auction should reproduce the previous canonical columns under the same settings.
+
+The complete-information scripts:
+
+```text
+run_multitask_optimizer_screening.py
+run_multitask_all_optimizer_experiment.py
+```
+
+are supporting optimizer-characterization experiments only. They are no longer required as a main report experiment and do not need to be rerun before the Voting report is written.
+
+## Experiment 3 - Direct vs Voting ablation
 
 Owner:
 
@@ -148,7 +134,16 @@ python run_multitask_voting_ablation.py
 
 Purpose:
 
-Isolate the benefit of proposal aggregation by comparing Direct and Voting using the exact same local proposal batch.
+Isolate the contribution of proposal aggregation by comparing Direct and Voting using the exact same local proposal batch.
+
+Current compared optimizer families remain:
+
+```text
+Hungarian
+Auction
+```
+
+This experiment supports the causal statement that Voting improves these optimizers relative to one fixed incomplete-information receiver. It does not yet establish Direct-vs-Voting uplift for MILP or ACO.
 
 Authoritative output root:
 
@@ -168,37 +163,41 @@ Voting uplift
 
 ## Required rerun order
 
-Run in this order so failures are easier to diagnose:
+The single-task experiment has already completed on the current report cycle. After the current code update, the required reruns are:
 
 ```bash
-python run_peer_cost_majority_experiment.py
-python run_multitask_all_optimizer_experiment.py
-python run_multitask_peer_cost_experiment.py
+python run_multitask_peer_cost_all_optimizers.py
 python run_multitask_voting_ablation.py
 ```
 
-If one command fails, stop the report rerun at the first failing owner/function/category/code and fix that boundary before continuing. Do not combine partial pre-fix and post-fix datasets.
+Before the formal Experiment 2 run, validate the new integration with:
+
+```bash
+python run_multitask_peer_cost_all_optimizers.py --tasks 5 20 100 --trials 3
+```
+
+If the smoke run fails, stop at the first owner/function/category/code boundary. Do not proceed to the 100-trial formal sweep until that boundary is fixed.
 
 ## Report data acceptance checklist
 
 Before report writing begins, confirm:
 
-1. every canonical command completed without exception;
-2. every formal point has `100` trials;
-3. the all-optimizer exact gate reports Auction/MILP consistency with Hungarian;
-4. the lossy P2P zero-loss gate reports Hungarian/Auction consistency;
-5. the Direct-vs-Voting zero-loss ablation gate passes;
-6. all result CSVs were regenerated after the final code version;
-7. smoke-test CSVs are not used in report figures/tables;
-8. tables use readable rounded display values while raw CSV values remain unrounded.
+1. Experiment 1's existing canonical 100-trial dataset completed without exception;
+2. Experiment 2's new five-optimizer command completes all task counts without exception;
+3. Experiment 2 contains exactly 100 trials per task-count/method point;
+4. Experiment 2's zero-loss gate reports Hungarian/Auction/MILP consistency with the Oracle;
+5. the old Greedy/Hungarian/Auction columns reproduce the preceding three-method canonical results within their existing numerical contracts;
+6. Experiment 3's Direct-vs-Voting zero-loss ablation gate passes;
+7. all report CSVs were generated by the final code version;
+8. smoke-test CSVs are not used in report figures/tables;
+9. report tables may round display values, while calculations use raw CSV values.
 
 ## Report structure after rerun
 
-The report should tell four separate controlled stories:
+The report should tell three controlled stories:
 
-1. single-task communication robustness;
-2. optimizer-family behavior as task load increases;
-3. multi-task optimizer behavior under 30% P2P cost-message loss;
-4. causal Direct-vs-Voting ablation showing the contribution of proposal consensus.
+1. **Single-task communication robustness** - how packet loss and fleet size affect majority execution success.
+2. **Multi-task optimizer-family behavior inside lossy Voting** - how Greedy, Hungarian, Auction, MILP, and ACO + Local Search behave under the same 30% P2P information loss as task load increases.
+3. **Direct-vs-Voting ablation** - whether proposal aggregation itself improves assignment quality relative to one fixed incomplete-information receiver.
 
-These questions should remain separated in the report so optimizer effects and communication/Voting effects are not conflated.
+The complete-information optimizer screening can be cited as supporting characterization or placed in an appendix, but it is not a main report experiment.
