@@ -1,42 +1,68 @@
 # Change Continuity
 
-Historical continuity through `2026-09-04 - Replace Slow Lossy Optimizers with Fast Heuristics and Parallel Trials` is preserved exactly in Git at:
+Historical continuity through `2026-09-04 - Replace Voting Auction with Voting Hungarian for the One-Hour Runtime Target` is preserved exactly in Git at:
 
 ```text
-commit: 838a715e340791f500db2880f0010d9d7af6069c
-blob:   e1f098316ed33bf5a40e0fdd00975c683c6d21ea
+commit: 713e348340715ed19e13909c90a47b2bde598151
+blob:   39420b5cce5da41286c25df76f63879c5481cbb7
 ```
 
-## 2026-09-04 - Replace Voting Auction with Voting Hungarian for the One-Hour Runtime Target
+## 2026-09-04 - Replace Multiple Greedy Curves with Four Distinct Fast Optimizer Families
 
 ### Purpose
-The user completed the all-voter parallel timing preview for the first fast Experiment 2 redesign:
+The user rejected a report figure dominated by multiple Greedy variants and requested only one Greedy baseline plus other computationally fast optimization families. The approximately one-hour macOS runtime target remains important.
+
+Canonical Experiment 2 now compares:
 
 ```text
-task points = 100, 500, 1000
-trials per point = 2
-voters = all 100 robots
-workers = 4
-methods = Sequential Greedy, Global Greedy, Static Regret-2 Greedy, Auction
-wall time = 193.18 s
+Voting Greedy
+Voting Hungarian
+Voting Min-Cost Flow
+Voting Sinkhorn + Rounding
 ```
 
-That measured preview extrapolates to roughly `1 h 47 min` for the canonical ten task points x 20 trials if runtime scales similarly, so it still misses the approximately one-hour target.
+`Hungarian Oracle` remains the full-information minimum-cost reference and is not plotted as a fifth quality curve.
 
-The user approved replacing receiver-local Voting Auction with receiver-local Voting Hungarian while keeping the three fast heuristics, all 100 voters, 20 trials per task point, the fixed 100-robot workload contract, and four-process trial parallelism.
-
-Before modification, repository-root `AGENTS.md` and `docs/AI_CHANGE_PROTOCOL.md` were checked in that order and remain absent. Then `docs/CHANGE_CONTINUITY.md`, canonical `docs/multitask_voting_mrta.md`, actual owner `run_multitask_peer_cost_all_optimizers.py`, exact owner function `solve_voter_batch_proposals`, exact preflight functions, and true Hungarian owner `run_multitask_peer_cost_experiment.py::solve_hungarian_assignment` were read before writing.
+Before modification, repository-root `AGENTS.md` and `docs/AI_CHANGE_PROTOCOL.md` were checked in that order and remain absent. Then `docs/CHANGE_CONTINUITY.md`, canonical `docs/multitask_voting_mrta.md`, actual Experiment 2 owner `run_multitask_peer_cost_all_optimizers.py`, exact routing/preflight functions, existing Greedy owner `run_multitask_workload_heuristics.py`, existing Hungarian owner `run_multitask_peer_cost_experiment.py::solve_hungarian_assignment`, and `requirements.txt` were read before writing.
 
 ### Files
-- `run_multitask_peer_cost_all_optimizers.py`
-- `docs/multitask_voting_mrta.md`
-- `docs/report_experiment_suite.md`
-- `docs/CHANGE_CONTINUITY.md`
+- `run_multitask_workload_optimizers.py` - new true owner for Min-Cost Flow and Sinkhorn-related optimization boundaries.
+- `run_multitask_peer_cost_all_optimizers.py` - canonical method selection, routing, preflight, Voting, evaluation, and parallel runtime.
+- `requirements.txt` - adds OR-Tools for capacity-native Min-Cost Flow.
+- `docs/multitask_voting_mrta.md` - canonical Experiment 2 specification.
+- `docs/report_experiment_suite.md` - report-authoritative rerun contract.
+- `docs/CHANGE_CONTINUITY.md` - this continuity record.
 
-No heuristic-owner implementation changed.
+The old Global Greedy, Static Regret-2 Greedy, Auction, MILP, and ACO implementations were not deleted.
 
 ### Owner and named functions
-Experiment 2 remains owned by:
+
+#### Single Greedy baseline owner
+
+```text
+run_multitask_workload_heuristics.py::solve_sequential_greedy_capacitated
+```
+
+#### New fast optimizer owner
+
+```text
+run_multitask_workload_optimizers.py
+```
+
+Named boundaries:
+
+- common input validation: `validate_optimizer_problem`
+- OR-Tools dependency: `require_min_cost_flow_dependency`
+- Min-Cost Flow cost representation: `quantize_min_cost_flow_costs`
+- Min-Cost Flow solver: `solve_min_cost_flow_capacitated`
+- Min-Cost Flow batch execution: `solve_min_cost_flow_batch`
+- Sinkhorn configuration validation: `validate_sinkhorn_config`
+- Sinkhorn continuous optimization: `compute_sinkhorn_transport_plan`
+- Sinkhorn discrete capacity rounding: `round_sinkhorn_plan_to_capacity`
+- Sinkhorn composed method: `solve_sinkhorn_capacitated`
+- Sinkhorn batch execution: `solve_sinkhorn_batch`
+
+#### Experiment 2 owner
 
 ```text
 run_multitask_peer_cost_all_optimizers.py
@@ -44,47 +70,50 @@ run_multitask_peer_cost_all_optimizers.py
 
 Changed named boundaries:
 
-- method-set ownership: `resolve_voting_methods`
-- receiver-local exact routing: `solve_voter_batch_proposals`
-- exact preflight: `validate_zero_loss_hungarian_contract`
+- method selection: `resolve_voting_methods`
+- local owner routing: `solve_voter_batch_proposals`
+- shared bounded preflight scenario: `build_zero_loss_case`
+- Greedy preflight: `validate_zero_loss_greedy_contract`
+- Hungarian preflight: `validate_zero_loss_hungarian_contract`
+- Min-Cost Flow preflight: `validate_zero_loss_min_cost_flow_contract`
+- Sinkhorn preflight: `validate_zero_loss_sinkhorn_contract`
 - combined preflight: `validate_zero_loss_optimizer_contract`
-- experiment reporting: `run_experiment`
+- report tolerance ownership: `cost_match_tolerance_percent`
 
-The actual Hungarian algorithm remains owned by:
+The true Hungarian implementation remains:
 
 ```text
 run_multitask_peer_cost_experiment.py::solve_hungarian_assignment
 ```
 
-Experiment 2 does not duplicate Hungarian or create a second exact solver state machine.
-
 ### Responsibility movement
-No responsibility moved to a wrapper.
+The canonical method set no longer imports all three capacitated Greedy variants. Experiment 2 routes only `p2p_sequential_greedy` to the existing heuristic owner.
 
-The Experiment 2 adapter already owns capacity-slot representation and receiver-local routing. It now routes the exact local branch to existing `p2p_hungarian` instead of existing `p2p_auction`.
+Min-Cost Flow and Sinkhorn are not implemented as wrappers around Hungarian or another optimizer. They have a dedicated owner module and operate on the physical receiver-local `100 x T` matrix.
 
-The true optimization algorithm remains in the existing Hungarian owner. The full-information Oracle also uses that same owner, but under a different information condition.
+Min-Cost Flow owns its capacity-native network representation. Sinkhorn owns its soft transport computation, while discrete rounding is intentionally separated into its own named function because continuous optimization and discrete feasibility are different concerns.
+
+Experiment 2 continues to own communication sampling, capacity-slot representation only where required by Hungarian/consensus, method routing, support accumulation, final Voting consensus, evaluation, and process-level trial scheduling.
 
 ### Preserved behavior
-- fixed physical fleet: `100` robots;
-- task batches: `100, 200, ..., 1000`;
+- physical robots remain fixed at `100`;
+- canonical task batches remain `100, 200, ..., 1000`;
 - `capacity_per_robot = ceil(tasks/100)`;
-- directed scalar cost-message loss: `30%`;
-- scalar cost: `0.05 + EuclideanDistance`;
-- formal Experiment 2 trials: `20` per task point;
-- formal voters: all `100` robots;
-- default process workers: up to `4`;
-- default receiver batch size: `4`;
-- paired scenario, voter, packet-loss, task-order, tie-priority, and capacity inputs;
-- three fast heuristics and their dedicated owner;
-- physical proposal support and capacitated final Voting consensus;
-- Hungarian Oracle as the full-information minimum-cost reference;
-- primary metric: direct cost error from the minimum;
-- output root and CSV schema;
-- Experiment 1 and Experiment 3.
+- directed P2P scalar cost-message loss remains `30%`;
+- scalar cost remains `0.05 + EuclideanDistance`;
+- formal Experiment 2 remains `20` trials per task point;
+- formal Experiment 2 still uses all `100` physical voters;
+- paired scenario, voter identities, packet-loss realization, task order, tie priority, and capacity remain shared by all methods;
+- independent `(task_count, trial)` jobs remain process-parallel with default up to four workers;
+- receiver batching remains a runtime/memory control only;
+- final proposal support remains physical robot/task support under the same capacitated consensus;
+- Hungarian Oracle remains the full-information minimum-cost reference;
+- primary metric remains direct cost error from the minimum;
+- output root and CSV schema remain unchanged;
+- Experiment 1 and Experiment 3 are unchanged.
 
 ### Deliberately changed behavior
-Canonical report-facing Voting methods are now:
+Previous canonical curves:
 
 ```text
 Voting Sequential Greedy
@@ -93,92 +122,130 @@ Voting Static Regret-2 Greedy
 Voting Hungarian
 ```
 
-`Voting Auction` is removed from the canonical lossy workload sweep. Its implementation is not deleted.
-
-The exact local branch now performs:
+New canonical curves:
 
 ```text
-receiver-local physical incomplete cost view
--> capacity-slot expansion
--> existing p2p_hungarian / solve_hungarian_assignment owner
--> slot-to-physical mapping
--> Voting support
-```
-
-The figure therefore normally has four optimizer curves. `Hungarian Oracle` remains in the CSV and supplies the `0%` reference, but it is not plotted as a fifth quality curve.
-
-### Why Oracle and Voting Hungarian are not duplicates
-
-```text
-Hungarian Oracle
-  full true cost matrix
-  one minimum-cost solve per trial
-  defines C_min
-
+Voting Greedy
 Voting Hungarian
-  one lossy receiver-local cost matrix per voter
-  100 local proposals per formal trial
-  proposal-support Voting consensus
+Voting Min-Cost Flow
+Voting Sinkhorn + Rounding
 ```
 
-They use the same underlying assignment algorithm but test different information/aggregation conditions.
+Only one Greedy baseline remains report-facing. The other Greedy implementations remain available for supporting experiments.
+
+Min-Cost Flow uses OR-Tools `SimpleMinCostFlow` with the physical capacity encoded on source-to-robot arcs. Receiver-visible float costs are multiplied by:
+
+```text
+MIN_COST_FLOW_COST_SCALE = 1_000_000
+```
+
+and rounded to integer arc costs because the OR-Tools owner requires integer costs. Final evaluation always uses the original float cost matrix. Complete-information Min-Cost Flow must be within `0.01%` of the float Hungarian Oracle in bounded preflight.
+
+Sinkhorn uses:
+
+```text
+epsilon = 0.08
+max_iterations = 30
+tolerance = 1e-5
+```
+
+and then calls the separate `round_sinkhorn_plan_to_capacity` boundary. Sinkhorn is explicitly an approximation and is not required to equal the Oracle.
+
+`requirements.txt` now includes:
+
+```text
+ortools>=9.10,<10
+```
 
 ### Diagnostic contract
-The exact preflight boundary is now:
+Experiment-level failures keep:
 
 ```text
 owner=run_multitask_peer_cost_all_optimizers
-function=validate_zero_loss_hungarian_contract
-category=planning
-code=ZERO_LOSS_NOT_ORACLE_CONSISTENT
+function=<named function>
+category=<data|time|state|dependency|planning|safety|runtime|contract>
+code=<named code>
 ```
 
-Unknown method routing still fails at:
+New optimizer-owner failures use:
 
 ```text
-owner=run_multitask_peer_cost_all_optimizers
-function=solve_voter_batch_proposals
-category=contract
-code=UNKNOWN_METHOD
+owner=run_multitask_workload_optimizers
 ```
 
-True Hungarian owner diagnostics continue to propagate unchanged from `run_multitask_peer_cost_experiment.py`.
+Representative first-failure boundaries:
+
+```text
+function=require_min_cost_flow_dependency category=dependency code=ORTOOLS_NOT_AVAILABLE
+function=validate_optimizer_problem category=data code=INVALID_OPTIMIZER_COST
+function=validate_optimizer_problem category=planning code=TASK_WITHOUT_VISIBLE_EDGE
+function=quantize_min_cost_flow_costs category=data code=MIN_COST_FLOW_COST_OVERFLOW
+function=validate_sinkhorn_config category=contract code=INVALID_SINKHORN_EPSILON
+function=compute_sinkhorn_transport_plan category=state code=SINKHORN_ROW_MASS_EXCEEDS_CAPACITY
+function=round_sinkhorn_plan_to_capacity category=contract code=SINKHORN_PLAN_SHAPE_MISMATCH
+```
+
+Exact/quality preflight boundaries include:
+
+```text
+function=validate_zero_loss_hungarian_contract category=planning code=ZERO_LOSS_NOT_ORACLE_CONSISTENT
+function=validate_zero_loss_min_cost_flow_contract category=planning code=ZERO_LOSS_NOT_ORACLE_CONSISTENT
+function=validate_zero_loss_sinkhorn_contract category=planning code=ZERO_LOSS_PROPOSAL_FAILURE
+```
 
 ### Validation performed
-- Re-fetched the modified owner after the code commit.
-- Confirmed `DEFAULT_VOTING_METHODS` contains the three heuristic methods plus `p2p_hungarian`.
-- Confirmed `METHOD_LABELS` exposes `Voting Hungarian` and no longer exposes `Voting Auction` in the canonical owner.
-- Confirmed `solve_voter_batch_proposals` routes the exact branch through existing `solve_local_optimizer_proposals("p2p_hungarian", ...)` after capacity-slot expansion.
-- Confirmed the exact preflight is renamed to `validate_zero_loss_hungarian_contract` and compares complete-information Voting Hungarian against the capacitated Hungarian Oracle.
-- Canonical and report-suite documents were synchronized.
-- No repository CI checks are available here; the user's Mac remains the real runtime boundary.
+- The new optimizer owner was compiled successfully with Python bytecode syntax validation in the execution container.
+- The rewritten Experiment 2 owner was also compiled successfully in the execution container.
+- A standalone Sinkhorn test on a `5 x 10` matrix reached the requested row/column masses and rounded to exactly two tasks per robot.
+- A standalone `100 x 1000` Sinkhorn solve in the container completed in about `0.009 s` for that synthetic matrix; this is implementation-level timing only and is not a Mac Experiment 2 runtime claim.
+- OR-Tools is not installed in the execution container, so the Min-Cost Flow solver could not be executed there. Its missing-dependency diagnostic was exercised successfully.
+- The OR-Tools bulk Python API used by the implementation (`add_arcs_with_capacity_and_unit_cost`, `set_nodes_supplies`, `flows`) was checked against current official OR-Tools examples/API documentation. Node arrays were adjusted to the documented `int32` dtype, with capacities/costs/supplies using `int64`.
+- The modified Experiment 2 owner was re-fetched from GitHub and inspected after the write.
+- Canonical and report-suite documents were synchronized with the four-method contract.
 
 ### Unfinished risks
-- The one-hour target is still a target, not a guarantee. The same `100/500/1000 x 2 trials x 100 voters x 4 workers` timing preview must be rerun after this exact-solver swap.
-- Hungarian still uses a capacity-slot matrix; at 1000 tasks this is a `1000 x 1000` local assignment problem per voter, although SciPy's Hungarian path is expected to be substantially faster than the prior Python Auction loop.
-- The three heuristic valid-proposal rates can legitimately fall under severe incomplete information and tight capacity; no hidden fallback is added.
-- Formal outputs are still written only after the complete experiment returns; checkpoint/resume remains separate future work.
+- The one-hour target is not yet validated for the new four-method set on the user's Mac.
+- OR-Tools must be installed in the user's existing virtual environment before the new canonical run can start.
+- Min-Cost Flow runtime at `T=1000` with 100 receiver-local solves per trial is still unknown on the user's Mac and may become the new bottleneck.
+- Sinkhorn rounding can legitimately fail under an incomplete view if its greedy discretization reaches a task with no remaining finite-capacity candidate. Such failures are exposed through `valid_proposal_rate_percent`; there is no hidden Hungarian fallback.
+- Formal CSVs are still written only after `run_experiment` completes; checkpoint/resume remains a separate future concern.
+- The existing one-page placeholder paper must be synchronized with Min-Cost Flow and Sinkhorn references after final Experiment 2 results are accepted.
 
 ### Next step
-Pull and rerun the same measured preview:
+Update the Mac environment and run the small real-machine smoke:
 
 ```bash
 git pull
+pip install -r requirements.txt
 
+time python run_multitask_peer_cost_all_optimizers.py \
+  --tasks 100 500 1000 \
+  --trials 1 \
+  --max-voters 5 \
+  --workers 1
+```
+
+If that passes, immediately run the all-voter timing preview:
+
+```bash
 time python run_multitask_peer_cost_all_optimizers.py \
   --tasks 100 500 1000 \
   --trials 2 \
   --workers 4
 ```
 
-If the measured wall time is sufficiently reduced, run the canonical Experiment 2:
+If the measured runtime fits the budget, start canonical Experiment 2:
 
 ```bash
 time python run_multitask_peer_cost_all_optimizers.py
 ```
 
 ### Commit SHA
-- `50b7c7d0bd9e071740888a6ade98600dc3eebc67` - replace canonical Voting Auction routing/preflight/label with Voting Hungarian.
-- `d5c768a0fc2461d430fa363682dc98d0e566dc17` - update canonical Experiment 2 specification.
-- `8740595f00d66f07e81470951255b8ea09f027db` - update report experiment suite and four-curve contract.
+- `501487ca2366d713a4a391cd83da18a4754b6f06` - created the dedicated Min-Cost Flow/Sinkhorn optimizer owner.
+- `bd629da9f46e33419c74b7599ce6aa3b58692a04` - added OR-Tools to project requirements.
+- `5cad5fa234e7e15fb55da2ca9dbb4d02990ce997` - routed Min-Cost Flow cost conversion through its named quantization boundary.
+- `a504dce16eac32f44992bb4f7cafadd9f139c80a` - replaced the canonical multiple-Greedy method set with Greedy/Hungarian/Min-Cost-Flow/Sinkhorn routing and preflights.
+- `dbdf63abee0d357060f2c233e34886fa2f42dc80` - aligned OR-Tools node arrays with the documented Python API dtypes.
+- `294c60e53f2848bbd2b94620479b738985433fe3` - updated the canonical Experiment 2 specification.
+- `19ddac895de0f77cab78af40e05d6cc866c54e3a` - updated the report experiment suite.
 - continuity update commit: this file's commit.
