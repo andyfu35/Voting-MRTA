@@ -20,32 +20,44 @@ from run_multitask_peer_cost_experiment import (
     solve_local_optimizer_proposals,
     solve_support_consensus,
 )
-from run_multitask_workload_heuristics import (
-    CAPACITATED_HEURISTIC_METHODS,
-    solve_capacitated_heuristic_batch,
+from run_multitask_workload_heuristics import solve_capacitated_heuristic_batch
+from run_multitask_workload_optimizers import (
+    MIN_COST_FLOW_METHOD,
+    MIN_COST_FLOW_ORACLE_TOLERANCE_PERCENT,
+    SINKHORN_METHOD,
+    solve_min_cost_flow_batch,
+    solve_sinkhorn_batch,
 )
 
 FIXED_ROBOT_COUNT = 100
 WORKLOAD_TASK_COUNTS = tuple(range(100, 1001, 100))
 MAX_TASK_COUNT = 1000
 FORMAL_TRIALS = 20
+GREEDY_METHOD = "p2p_sequential_greedy"
 HUNGARIAN_METHOD = "p2p_hungarian"
-DEFAULT_VOTING_METHODS = (*CAPACITATED_HEURISTIC_METHODS, HUNGARIAN_METHOD)
+DEFAULT_VOTING_METHODS = (
+    GREEDY_METHOD,
+    HUNGARIAN_METHOD,
+    MIN_COST_FLOW_METHOD,
+    SINKHORN_METHOD,
+)
 REPORT_METHOD_ORDER = ("oracle",) + DEFAULT_VOTING_METHODS
 METHOD_LABELS = {
     "oracle": "Hungarian Oracle",
-    "p2p_sequential_greedy": "Voting Sequential Greedy",
-    "p2p_global_greedy": "Voting Global Greedy",
-    "p2p_regret2_greedy": "Voting Static Regret-2 Greedy",
-    "p2p_hungarian": "Voting Hungarian",
+    GREEDY_METHOD: "Voting Greedy",
+    HUNGARIAN_METHOD: "Voting Hungarian",
+    MIN_COST_FLOW_METHOD: "Voting Min-Cost Flow",
+    SINKHORN_METHOD: "Voting Sinkhorn + Rounding",
 }
 DEFAULT_VOTER_BATCH_SIZE = 4
 DEFAULT_PROGRESS_EVERY_VOTERS = 25
 DEFAULT_PARALLEL_WORKERS = max(1, min(4, os.cpu_count() or 1))
 VOTER_SELECTION_SEED_OFFSET = 2_000_003
 VISIBILITY_SEED_OFFSET = 4_000_007
-HEURISTIC_ZERO_LOSS_CHECK_MAX_TASKS = 200
+GREEDY_ZERO_LOSS_CHECK_MAX_TASKS = 200
 HUNGARIAN_ZERO_LOSS_CHECK_MAX_TASKS = 200
+MIN_COST_FLOW_ZERO_LOSS_CHECK_MAX_TASKS = 200
+SINKHORN_ZERO_LOSS_CHECK_MAX_TASKS = 200
 
 ROOT = Path(__file__).resolve().parent
 RESULT_DIR = ROOT / "results" / "multitask_peer_cost_fixed100_workload"
@@ -73,14 +85,16 @@ def fail(function: str, category: str, code: str, details: str) -> None:
 
 
 def cost_match_tolerance_percent(method: str) -> float:
-    """Return the objective-match tolerance for report metrics."""
+    """Return the objective-match tolerance owned by each report method."""
+    if method == MIN_COST_FLOW_METHOD:
+        return MIN_COST_FLOW_ORACLE_TOLERANCE_PERCENT
     if method in REPORT_METHOD_ORDER:
         return OPTIMAL_COST_TOLERANCE_PERCENT
     fail("cost_match_tolerance_percent", "contract", "UNKNOWN_METHOD", f"method={method}")
 
 
 def resolve_voting_methods() -> tuple[str, ...]:
-    """Return the canonical one-hour-oriented Voting optimizer set."""
+    """Return the canonical diverse fast Voting optimizer set."""
     return DEFAULT_VOTING_METHODS
 
 
@@ -185,7 +199,7 @@ def build_capacity_slot_cost_views(
     receiver_costs: np.ndarray,
     capacity_per_robot: int,
 ) -> np.ndarray:
-    """Expand receiver-local physical robot rows for the capacity-one exact local owner."""
+    """Expand receiver-local physical robot rows for the capacity-one Hungarian owner."""
     if receiver_costs.ndim != 3:
         fail(
             "build_capacity_slot_cost_views",
@@ -393,10 +407,10 @@ def solve_voter_batch_proposals(
     task_order: np.ndarray,
     capacity_per_robot: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Route local physical views to fast heuristics or the existing Hungarian owner."""
-    if method in CAPACITATED_HEURISTIC_METHODS:
+    """Route one receiver batch to the true owner of each canonical optimizer family."""
+    if method == GREEDY_METHOD:
         return solve_capacitated_heuristic_batch(
-            method=method,
+            method=GREEDY_METHOD,
             receiver_costs=receiver_costs,
             task_order=task_order,
             capacity_per_robot=capacity_per_robot,
@@ -417,6 +431,16 @@ def solve_voter_batch_proposals(
             capacity_per_robot=capacity_per_robot,
         )
         return proposals, valid
+    if method == MIN_COST_FLOW_METHOD:
+        return solve_min_cost_flow_batch(
+            receiver_costs=receiver_costs,
+            capacity_per_robot=capacity_per_robot,
+        )
+    if method == SINKHORN_METHOD:
+        return solve_sinkhorn_batch(
+            receiver_costs=receiver_costs,
+            capacity_per_robot=capacity_per_robot,
+        )
     fail("solve_voter_batch_proposals", "contract", "UNKNOWN_METHOD", f"method={method}")
 
 
@@ -626,98 +650,172 @@ def solve_zero_loss_consensus(
     return assignment, 100.0
 
 
-def validate_zero_loss_heuristic_contracts(seed: int, max_task_count: int) -> None:
-    """Require every fast heuristic to return a valid capacitated proposal with complete data."""
-    check_tasks = sorted(
-        {
-            min(100, max_task_count),
-            min(HEURISTIC_ZERO_LOSS_CHECK_MAX_TASKS, max_task_count),
-        }
+def build_zero_loss_case(seed: int, task_count: int) -> tuple[np.ndarray, int, np.ndarray, np.ndarray]:
+    """Build one deterministic complete-information integration case shared by preflight owners."""
+    rng = np.random.default_rng(seed + task_count * 100_003)
+    costs = generate_spatial_cost_matrix(FIXED_ROBOT_COUNT, task_count, rng)
+    capacity_per_robot = resolve_robot_capacity(task_count)
+    task_order = rng.permutation(task_count)
+    tie_priority = rng.random((FIXED_ROBOT_COUNT, task_count))
+    return costs, capacity_per_robot, task_order, tie_priority
+
+
+def validate_zero_loss_greedy_contract(seed: int, max_task_count: int) -> None:
+    """Require the single Greedy baseline to return valid capacity-feasible proposals."""
+    task_count = min(GREEDY_ZERO_LOSS_CHECK_MAX_TASKS, max_task_count)
+    if task_count <= 0:
+        return
+    costs, capacity_per_robot, task_order, tie_priority = build_zero_loss_case(
+        seed + 191_173,
+        task_count,
     )
-    for task_count in check_tasks:
-        if task_count <= 0:
-            continue
-        rng = np.random.default_rng(seed + 191_173 + task_count * 100_003)
-        costs = generate_spatial_cost_matrix(FIXED_ROBOT_COUNT, task_count, rng)
-        capacity_per_robot = resolve_robot_capacity(task_count)
-        task_order = rng.permutation(task_count)
-        tie_priority = rng.random((FIXED_ROBOT_COUNT, task_count))
-        for method in CAPACITATED_HEURISTIC_METHODS:
-            assignment, valid_rate = solve_zero_loss_consensus(
-                method=method,
-                costs=costs,
-                capacity_per_robot=capacity_per_robot,
-                task_order=task_order,
-                tie_priority=tie_priority,
-            )
-            if valid_rate != 100.0:
-                fail(
-                    "validate_zero_loss_heuristic_contracts",
-                    "planning",
-                    "ZERO_LOSS_PROPOSAL_FAILURE",
-                    f"method={method} tasks={task_count} valid_rate={valid_rate}",
-                )
-            validate_capacity_assignment(
-                costs=costs,
-                assignment=assignment,
-                capacity_per_robot=capacity_per_robot,
-            )
+    assignment, valid_rate = solve_zero_loss_consensus(
+        method=GREEDY_METHOD,
+        costs=costs,
+        capacity_per_robot=capacity_per_robot,
+        task_order=task_order,
+        tie_priority=tie_priority,
+    )
+    if valid_rate != 100.0:
+        fail(
+            "validate_zero_loss_greedy_contract",
+            "planning",
+            "ZERO_LOSS_PROPOSAL_FAILURE",
+            f"tasks={task_count} valid_rate={valid_rate}",
+        )
+    validate_capacity_assignment(
+        costs=costs,
+        assignment=assignment,
+        capacity_per_robot=capacity_per_robot,
+    )
 
 
 def validate_zero_loss_hungarian_contract(seed: int, max_task_count: int) -> None:
-    """Require Voting Hungarian to match the capacitated Hungarian reference with complete data."""
-    check_tasks = sorted(
-        {
-            min(100, max_task_count),
-            min(HUNGARIAN_ZERO_LOSS_CHECK_MAX_TASKS, max_task_count),
-        }
+    """Require Voting Hungarian to match the capacitated full-information Oracle."""
+    task_count = min(HUNGARIAN_ZERO_LOSS_CHECK_MAX_TASKS, max_task_count)
+    if task_count <= 0:
+        return
+    costs, capacity_per_robot, task_order, tie_priority = build_zero_loss_case(
+        seed + 291_173,
+        task_count,
     )
-    for task_count in check_tasks:
-        if task_count <= 0:
-            continue
-        rng = np.random.default_rng(seed + 291_173 + task_count * 100_003)
-        costs = generate_spatial_cost_matrix(FIXED_ROBOT_COUNT, task_count, rng)
-        capacity_per_robot = resolve_robot_capacity(task_count)
-        task_order = rng.permutation(task_count)
-        tie_priority = rng.random((FIXED_ROBOT_COUNT, task_count))
-        oracle = solve_capacity_oracle(costs, capacity_per_robot)
-        if oracle is None:
-            fail(
-                "validate_zero_loss_hungarian_contract",
-                "planning",
-                "ORACLE_INFEASIBLE",
-                f"tasks={task_count} capacity={capacity_per_robot}",
-            )
-        oracle_cost = assignment_total_cost_with_capacity(costs, oracle, capacity_per_robot)
-        assignment, valid_rate = solve_zero_loss_consensus(
-            method=HUNGARIAN_METHOD,
-            costs=costs,
-            capacity_per_robot=capacity_per_robot,
-            task_order=task_order,
-            tie_priority=tie_priority,
+    oracle = solve_capacity_oracle(costs, capacity_per_robot)
+    if oracle is None:
+        fail(
+            "validate_zero_loss_hungarian_contract",
+            "planning",
+            "ORACLE_INFEASIBLE",
+            f"tasks={task_count} capacity={capacity_per_robot}",
         )
-        if valid_rate != 100.0:
-            fail(
-                "validate_zero_loss_hungarian_contract",
-                "planning",
-                "ZERO_LOSS_PROPOSAL_FAILURE",
-                f"tasks={task_count} valid_rate={valid_rate}",
-            )
-        actual_cost = assignment_total_cost_with_capacity(costs, assignment, capacity_per_robot)
-        gap_percent = 100.0 * (actual_cost - oracle_cost) / oracle_cost
-        if abs(gap_percent) > OPTIMAL_COST_TOLERANCE_PERCENT:
-            fail(
-                "validate_zero_loss_hungarian_contract",
-                "planning",
-                "ZERO_LOSS_NOT_ORACLE_CONSISTENT",
-                f"method={HUNGARIAN_METHOD} tasks={task_count} actual_gap_percent={gap_percent}",
-            )
+    oracle_cost = assignment_total_cost_with_capacity(costs, oracle, capacity_per_robot)
+    assignment, valid_rate = solve_zero_loss_consensus(
+        method=HUNGARIAN_METHOD,
+        costs=costs,
+        capacity_per_robot=capacity_per_robot,
+        task_order=task_order,
+        tie_priority=tie_priority,
+    )
+    if valid_rate != 100.0:
+        fail(
+            "validate_zero_loss_hungarian_contract",
+            "planning",
+            "ZERO_LOSS_PROPOSAL_FAILURE",
+            f"tasks={task_count} valid_rate={valid_rate}",
+        )
+    actual_cost = assignment_total_cost_with_capacity(costs, assignment, capacity_per_robot)
+    gap_percent = 100.0 * (actual_cost - oracle_cost) / oracle_cost
+    if abs(gap_percent) > OPTIMAL_COST_TOLERANCE_PERCENT:
+        fail(
+            "validate_zero_loss_hungarian_contract",
+            "planning",
+            "ZERO_LOSS_NOT_ORACLE_CONSISTENT",
+            f"method={HUNGARIAN_METHOD} tasks={task_count} actual_gap_percent={gap_percent}",
+        )
+
+
+def validate_zero_loss_min_cost_flow_contract(seed: int, max_task_count: int) -> None:
+    """Require scaled Min-Cost Flow to match the float Oracle within quantization tolerance."""
+    task_count = min(MIN_COST_FLOW_ZERO_LOSS_CHECK_MAX_TASKS, max_task_count)
+    if task_count <= 0:
+        return
+    costs, capacity_per_robot, task_order, tie_priority = build_zero_loss_case(
+        seed + 391_173,
+        task_count,
+    )
+    oracle = solve_capacity_oracle(costs, capacity_per_robot)
+    if oracle is None:
+        fail(
+            "validate_zero_loss_min_cost_flow_contract",
+            "planning",
+            "ORACLE_INFEASIBLE",
+            f"tasks={task_count} capacity={capacity_per_robot}",
+        )
+    oracle_cost = assignment_total_cost_with_capacity(costs, oracle, capacity_per_robot)
+    assignment, valid_rate = solve_zero_loss_consensus(
+        method=MIN_COST_FLOW_METHOD,
+        costs=costs,
+        capacity_per_robot=capacity_per_robot,
+        task_order=task_order,
+        tie_priority=tie_priority,
+    )
+    if valid_rate != 100.0:
+        fail(
+            "validate_zero_loss_min_cost_flow_contract",
+            "planning",
+            "ZERO_LOSS_PROPOSAL_FAILURE",
+            f"tasks={task_count} valid_rate={valid_rate}",
+        )
+    actual_cost = assignment_total_cost_with_capacity(costs, assignment, capacity_per_robot)
+    gap_percent = 100.0 * (actual_cost - oracle_cost) / oracle_cost
+    if abs(gap_percent) > MIN_COST_FLOW_ORACLE_TOLERANCE_PERCENT:
+        fail(
+            "validate_zero_loss_min_cost_flow_contract",
+            "planning",
+            "ZERO_LOSS_NOT_ORACLE_CONSISTENT",
+            (
+                f"method={MIN_COST_FLOW_METHOD} tasks={task_count} "
+                f"expected_abs_gap_percent<={MIN_COST_FLOW_ORACLE_TOLERANCE_PERCENT} "
+                f"actual={gap_percent}"
+            ),
+        )
+
+
+def validate_zero_loss_sinkhorn_contract(seed: int, max_task_count: int) -> None:
+    """Require Sinkhorn plus explicit rounding to return a valid capacity-feasible proposal."""
+    task_count = min(SINKHORN_ZERO_LOSS_CHECK_MAX_TASKS, max_task_count)
+    if task_count <= 0:
+        return
+    costs, capacity_per_robot, task_order, tie_priority = build_zero_loss_case(
+        seed + 491_173,
+        task_count,
+    )
+    assignment, valid_rate = solve_zero_loss_consensus(
+        method=SINKHORN_METHOD,
+        costs=costs,
+        capacity_per_robot=capacity_per_robot,
+        task_order=task_order,
+        tie_priority=tie_priority,
+    )
+    if valid_rate != 100.0:
+        fail(
+            "validate_zero_loss_sinkhorn_contract",
+            "planning",
+            "ZERO_LOSS_PROPOSAL_FAILURE",
+            f"tasks={task_count} valid_rate={valid_rate}",
+        )
+    validate_capacity_assignment(
+        costs=costs,
+        assignment=assignment,
+        capacity_per_robot=capacity_per_robot,
+    )
 
 
 def validate_zero_loss_optimizer_contract(seed: int, max_task_count: int) -> None:
-    """Run bounded integration gates for the canonical heuristic and Hungarian families."""
-    validate_zero_loss_heuristic_contracts(seed, max_task_count)
+    """Run bounded integration gates for each canonical optimizer family."""
+    validate_zero_loss_greedy_contract(seed, max_task_count)
     validate_zero_loss_hungarian_contract(seed, max_task_count)
+    validate_zero_loss_min_cost_flow_contract(seed, max_task_count)
+    validate_zero_loss_sinkhorn_contract(seed, max_task_count)
 
 
 def evaluate_assignment(
@@ -1022,7 +1120,10 @@ def run_experiment(
     voting_methods = resolve_voting_methods()
     validate_zero_loss_optimizer_contract(seed, max(task_counts))
 
-    print("Zero-loss optimizer contract: PASS (fast heuristics feasible; Voting Hungarian exact at bounded checks)")
+    print(
+        "Zero-loss optimizer contract: PASS "
+        "(Greedy/Sinkhorn feasible; Hungarian exact; Min-Cost Flow within quantization tolerance)"
+    )
     print(
         "Experiment 2 workload: robots=100 fixed; "
         "capacity_per_robot=ceil(tasks/100); tasks are batch workload"
@@ -1175,7 +1276,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Run the time-budgeted lossy P2P Voting workload experiment with 100 fixed robots, "
-            "100..1000 tasks, fast heuristic local solvers, Voting Hungarian, and parallel trials."
+            "100..1000 tasks, Greedy/Hungarian/Min-Cost-Flow/Sinkhorn local optimizers, "
+            "and parallel trials."
         )
     )
     parser.add_argument(
