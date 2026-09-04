@@ -1,24 +1,43 @@
-# Multi-Task Lossy P2P Voting Scaling Experiment
+# Fixed-100-Robot Lossy P2P Voting Workload Experiment
 
 This is the canonical report-facing Experiment 2 for the current one-page paper cycle.
 
 ## Research question
 
-Under `30%` independent directed P2P scalar task-cost packet loss, how does Democracy/Voting assignment quality change as the multi-robot system scales toward `1000` simultaneous tasks?
+Under `30%` independent directed P2P scalar task-cost packet loss, how does Democracy/Voting assignment quality change as the task workload grows while the physical fleet remains fixed at `100` robots?
 
-The capacity-one assignment semantics remain unchanged by using a matched fleet at every point:
-
-```text
-robot_count = task_count
-```
-
-The current default scale points remain:
+The physical fleet is always:
 
 ```text
-50, 100, 200, 400, 600, 800, 1000 robots/tasks
+robot_count = 100
 ```
 
-For a denser figure, the CLI may explicitly request 50-step points from `50` through `1000`; this changes only which scale points are sampled.
+The canonical task-batch sweep is:
+
+```text
+50, 100, 150, 200, 250, 300, 350, 400, 450, 500,
+550, 600, 650, 700, 750, 800, 850, 900, 950, 1000 tasks
+```
+
+These are **task batches / allocation workload**, not claims that one physical robot executes multiple tasks simultaneously.
+
+For a task batch of size `T`, the uniform assignment capacity is:
+
+```text
+capacity_per_robot = ceil(T / 100)
+```
+
+Examples:
+
+```text
+T=50   -> capacity 1
+T=100  -> capacity 1
+T=150  -> capacity 2
+T=500  -> capacity 5
+T=1000 -> capacity 10
+```
+
+This preserves a bounded, balanced allocation model while allowing the workload to exceed the fleet size.
 
 ## Canonical owner
 
@@ -26,11 +45,11 @@ For a denser figure, the CLI may explicitly request 50-step points from `50` thr
 run_multitask_peer_cost_all_optimizers.py
 ```
 
-The filename is retained for command compatibility.
+The filename is retained for command compatibility even though the experiment is no longer a matched robot/task scale sweep.
 
 ## Compared methods
 
-The default scalable methods are:
+Fast default methods remain:
 
 ```text
 Hungarian Oracle
@@ -39,52 +58,91 @@ Voting Hungarian
 Voting Auction
 ```
 
-The default command deliberately excludes expensive receiver-local methods.
-
-An optional MILP probe is available:
+Optional optimizer families can be included without changing the fast default:
 
 ```bash
-python run_multitask_peer_cost_all_optimizers.py --include-milp ...
+--include-milp
+--include-aco
 ```
 
-This adds:
+They add:
 
 ```text
 Voting MILP
+Voting ACO + Local Search
 ```
 
-without changing the default method set.
-
-A MILP-only probe is also available:
+The intended full multi-optimizer rerun is:
 
 ```bash
-python run_multitask_peer_cost_all_optimizers.py --only-milp ...
+python run_multitask_peer_cost_all_optimizers.py \
+  --include-milp \
+  --include-aco
 ```
 
-This runs `Voting MILP` as the only Voting optimizer. `Hungarian Oracle` is still computed once per trial only as the full-information minimum-cost evaluation reference needed to calculate cost error. Greedy, Voting Hungarian, and Voting Auction are not run in this mode.
+`--only-milp` remains available for isolated timing or completion of missing MILP data.
 
-`--include-milp` and `--only-milp` are mutually exclusive.
-
-The MILP algorithm itself remains owned by:
+The optimization algorithms themselves remain owned by their existing modules:
 
 ```text
-run_multitask_optimizer_screening.py::solve_milp_assignment
+Greedy / Hungarian / Auction:
+run_multitask_peer_cost_experiment.py
+
+MILP / ACO + Local Search:
+run_multitask_optimizer_screening.py
 ```
 
-The scaling owner only routes each incomplete receiver matrix to that existing owner and accumulates the returned proposal support. No second MILP implementation is introduced.
+Experiment 2 does not copy a second implementation of any optimizer.
 
-`ACO + Local Search` remains excluded from the scaling sweep for now because its receiver-local runtime was substantially heavier than MILP in the preceding optimizer screening. It can be reconsidered after the MILP timing probe.
+## Capacity-slot representation
+
+The existing optimizer owners solve capacity-one assignment matrices. Experiment 2 therefore owns one explicit representation transformation instead of changing or duplicating each optimizer.
+
+For physical cost matrix:
+
+```text
+C in R^(100 x T)
+```
+
+and uniform capacity `K = ceil(T/100)`, each physical robot row is repeated `K` times to create capacity slots:
+
+```text
+C_slot in R^((100*K) x T)
+```
+
+Each capacity slot can receive at most one task under the existing assignment owners. Slot assignments are mapped back to physical robots after optimization.
+
+This is equivalent to the physical constraint:
+
+```text
+sum_j x_ij <= K   for every physical robot i
+sum_i x_ij = 1    for every task j
+```
+
+The same slot representation is used for:
+
+- full-information Hungarian Oracle;
+- receiver-local Greedy;
+- receiver-local Hungarian;
+- receiver-local Auction;
+- receiver-local MILP;
+- receiver-local ACO + Local Search;
+- final support-maximizing consensus.
+
+No optimizer receives a different capacity model.
 
 ## Controlled settings
 
+- Physical robots: `100` fixed.
 - Directed P2P scalar task-cost packet loss: `30%`.
-- Robot capacity: one simultaneous task per robot.
-- Matched scale: `robot_count == task_count`.
-- Formal trials per reported scale point: `100` unless this contract is explicitly revised.
+- Task batches: `50..1000` in steps of `50`.
+- Uniform per-robot batch capacity: `ceil(tasks/100)`.
+- Formal trials per reported task count: `100` unless explicitly revised later.
+- Canonical formal mode uses all `100` physical robots as voters.
 - Task delivery: reliable.
 - Final proposal collection: reliable/in-window in this controlled stage.
-- Route planning, execution noise, retransmission, permanent failure, deadlines, Robust Optimization, and multi-objective costs remain excluded.
-- Scalar cost remains:
+- Route execution noise, retransmission, permanent robot failure, deadlines, Robust Optimization, and multi-objective costs remain excluded.
+- Scalar task cost remains:
 
 ```text
 C_ij = 0.05 + EuclideanDistance(robot_i, task_j)
@@ -95,173 +153,124 @@ C_ij = 0.05 + EuclideanDistance(robot_i, task_j)
 For every `(task_count, trial)` pair:
 
 ```text
-robot_count = task_count
 trial_seed = seed + task_count * 100003 + trial * 1009
 ```
 
 Separate deterministic streams derive:
 
-- scenario geometry, task order, and tie priority;
+- physical robot/task geometry, task order, tie priority;
 - optional voter selection;
-- packet-loss visibility.
+- packet-loss visibility;
+- ACO internal search randomness.
 
 All enabled Voting methods receive the same:
 
-- true cost matrix;
-- voter identities;
-- directed packet-loss views;
+- physical `100 x T` cost matrix;
+- physical voter identities;
+- directed packet-loss realization;
 - task order;
-- tie-priority matrix.
+- tie-priority matrix;
+- uniform capacity value.
 
-No optimizer samples or regenerates its own communication realization.
+No optimizer samples or regenerates communication loss.
 
-Because these streams depend on scale/trial rather than method membership, a MILP-only rerun can be compared with a preceding Greedy/Hungarian/Auction run that used the same task count, trial numbers, voter cap, packet-loss rate, and seed.
+ACO uses a separate deterministic per-physical-receiver RNG stream, so enabling ACO does not change the communication realization or another optimizer's input.
 
 ## P2P information model
 
-Robot `i` owns its own task-cost row. For receiver `r` and task `j`, directed scalar visibility is sampled independently:
+Robot `i` owns its own task-cost row. For physical receiver `r` and task `j`, visibility is sampled independently for the directed message:
 
 ```text
-sender i -> receiver r -> task j
+sender robot i -> receiver robot r -> task j
 ```
 
-Every receiver always knows its own sender row. Missing entries are represented as:
+Every receiver always knows its own physical sender row.
+
+Missing physical robot/task costs are represented as:
 
 ```text
 +inf
 ```
 
-and remain unavailable assignment edges.
+before capacity-slot expansion. Therefore all slots belonging to the same physical robot inherit the same receiver-local visibility state for a task.
 
-## Scalable receiver batching
+## Receiver batching
 
-The owner does not materialize a full `receiver x sender x task` tensor at large scale. Voting receivers are streamed in bounded batches:
+Receiver-local physical views are streamed in bounded batches:
 
 ```text
 DEFAULT_VOTER_BATCH_SIZE = 8
 ```
 
-For each batch:
+For each physical receiver batch:
 
-1. sample that batch's directed visibility;
-2. materialize only that batch's incomplete cost views;
-3. run every enabled optimizer on those same views;
-4. accumulate proposal support per optimizer;
-5. discard the local views before the next batch.
+1. sample directed physical sender-to-receiver visibility;
+2. materialize only that batch's incomplete `100 x T` views;
+3. expand physical robot rows into capacity slots;
+4. run every enabled optimizer on those same slot views;
+5. map slot assignments back to physical robots;
+6. accumulate physical robot/task proposal support;
+7. discard the batch views.
 
-Batch size changes memory/runtime only. It does not change selected voters, packet-loss samples, proposals, support totals, or consensus for a fixed configuration.
+Batch size changes memory/runtime only. It does not change voter identities, communication samples, ACO receiver seeds, support totals, or final assignments for a fixed experiment configuration.
 
-For a 1000-task MILP timing probe, `--voter-batch-size 1` is recommended to reduce peak memory while preserving the same receiver sequence and results.
+## Voting support and capacitated consensus
 
-## Optimizer routing boundary
-
-Default Greedy/Hungarian/Auction proposals remain owned by:
-
-```text
-run_multitask_peer_cost_experiment.py::solve_local_optimizer_proposals
-```
-
-Optional MILP proposals are routed through:
+Each valid receiver proposal assigns every task to one physical robot and respects:
 
 ```text
-run_multitask_peer_cost_all_optimizers.py::solve_voter_batch_proposals
-    -> run_multitask_peer_cost_all_optimizers.py::solve_milp_batch_proposals
-    -> run_multitask_optimizer_screening.py::solve_milp_assignment
+load(robot_i) <= capacity_per_robot
 ```
 
-`solve_milp_batch_proposals` owns only receiver iteration and proposal validity bookkeeping. The optimization model, missing-edge treatment, HiGHS invocation, and numerical behavior remain owned by `solve_milp_assignment`.
-
-## Voting support / consensus
-
-Each valid receiver proposal is a complete capacity-one task assignment.
-
-Support is:
+Support is accumulated on physical robots:
 
 ```text
 S_ij = number of valid receiver proposals assigning task j to robot i
 ```
 
-The final assignment maximizes total support subject to:
+For final consensus, physical support/tie rows are expanded into the same capacity-slot representation and passed to the existing support-consensus owner.
 
-```text
-sum_i x_ij = 1   for every task j
-sum_j x_ij <= 1  for every robot i
-```
+The final physical assignment therefore maximizes proposal support subject to the same uniform robot capacity.
 
 The paired tie-priority matrix is used only for equal-support ties. True cost is not used as a hidden consensus tie-break.
 
-## Full-voter mode vs trend-preview mode
+## Optimizer routing boundaries
 
-Canonical behavior uses all robots as voters:
+Default Greedy/Hungarian/Auction:
 
-```bash
-python run_multitask_peer_cost_all_optimizers.py
+```text
+run_multitask_peer_cost_all_optimizers.py::solve_slot_voter_batch_proposals
+    -> run_multitask_peer_cost_experiment.py::solve_local_optimizer_proposals
 ```
 
-For immediate trend inspection, a receiver cap may be used explicitly:
+MILP:
 
-```bash
-python run_multitask_peer_cost_all_optimizers.py \
-  --tasks 50 100 150 200 250 300 350 400 450 500 \
-          550 600 650 700 750 800 850 900 950 1000 \
-  --trials 10 \
-  --max-voters 100
+```text
+solve_slot_voter_batch_proposals
+    -> solve_milp_batch_proposals
+    -> run_multitask_optimizer_screening.py::solve_milp_assignment
 ```
 
-This is preview data, not canonical full-voter report data.
+ACO + Local Search:
 
-## Optional MILP timing probes
-
-To run only the previously unmeasured MILP Voting method at the largest scale, use a staged timing probe rather than rerunning the already measured default methods.
-
-First measure one 1000-task MILP local-voting trial with very few voters:
-
-```bash
-time python run_multitask_peer_cost_all_optimizers.py \
-  --tasks 1000 \
-  --trials 1 \
-  --max-voters 5 \
-  --voter-batch-size 1 \
-  --only-milp
+```text
+solve_slot_voter_batch_proposals
+    -> solve_aco_batch_proposals
+    -> run_multitask_optimizer_screening.py::solve_aco_assignment
 ```
 
-If that runtime and memory use are acceptable, increase to the same 100-voter preview condition used by the preceding scaling preview:
+The Experiment 2 adapter owns capacity representation, physical/slot mapping, paired RNG selection, and proposal bookkeeping only.
 
-```bash
-time python run_multitask_peer_cost_all_optimizers.py \
-  --tasks 1000 \
-  --trials 10 \
-  --max-voters 100 \
-  --voter-batch-size 1 \
-  --only-milp
-```
+## Zero-loss integration gates
 
-The second command performs `10 x 100 = 1000` receiver-local 1000-by-1000 MILP solves, so it may still be very expensive. The first command is the required timing boundary before attempting it.
+Preflight checks are intentionally bounded so they verify integration without turning startup into the expensive experiment itself.
 
-The older additive probe remains available when a same-process comparison is desired:
+- single-task Greedy is checked against the capacitated Hungarian reference;
+- Voting Hungarian and Voting Auction are checked at bounded task loads up to `200`, including a capacity-greater-than-one case;
+- Voting MILP is checked against the Oracle up to `100` tasks under its existing numerical tolerance;
+- Voting ACO + Local Search is checked for a valid capacity-feasible complete-information proposal up to `150` tasks, but is not incorrectly required to equal the exact Oracle.
 
-```bash
-python run_multitask_peer_cost_all_optimizers.py \
-  --tasks 50 100 150 \
-  --trials 2 \
-  --max-voters 20 \
-  --include-milp
-```
-
-## Zero-loss contracts
-
-Before the lossy sweep, only enabled optimizer integrations are checked:
-
-- if Greedy is enabled, single-task Greedy must match the Hungarian Oracle;
-- if Voting Hungarian is enabled, it must match the Oracle at representative scales;
-- if Voting Auction is enabled, it must match the Oracle at representative scales;
-- if Voting MILP is enabled, it is checked against the Oracle on a bounded complete-information integration case up to 50 tasks.
-
-Therefore `--only-milp` skips the Greedy/Hungarian/Auction preflight solves and performs only the bounded MILP integration gate plus the Oracle calculation required by that gate.
-
-The bounded MILP gate deliberately avoids turning preflight into a million-variable 1000-task MILP. Larger lossy MILP cases remain measured experiment points rather than preflight checks.
-
-MILP objective matching uses its existing numerical tolerance:
+MILP objective matching uses:
 
 ```text
 MILP_NUMERICAL_TOLERANCE_PERCENT = 1e-6
@@ -269,57 +278,51 @@ MILP_NUMERICAL_TOLERANCE_PERCENT = 1e-6
 
 ## Primary report metric
 
-The primary Experiment 2 figure is now direct cost error relative to the full-information minimum-cost reference:
+The primary Experiment 2 figure is direct cost error relative to the full-information capacitated minimum:
 
 ```text
 Cost error (%) = 100 * (method_cost - oracle_cost) / oracle_cost
 ```
 
-Lower is better; `0%` means the method reaches the minimum total cost.
+Lower is better; `0%` means the method reaches the minimum total assignment cost under the same capacity contract.
 
-The code field remains:
+The CSV field remains:
 
 ```text
 average_optimality_gap_percent
 ```
 
-but the report-facing y-axis is labeled:
-
-```text
-Cost error from minimum (%)
-```
-
-The script continues to record supporting metrics:
+Supporting metrics remain:
 
 - optimal-cost match;
 - near-optimal within 5%;
-- exact optimal assignment;
+- exact optimal physical assignment;
 - valid local proposal rate.
 
-The `<=5%` metric is no longer the primary figure.
+Generated figures are line-only. Exactly identical curves share one legend entry; near-overlapping but non-identical curves remain separate.
 
-Generated figures use line-only curves with no point markers. If two method series are numerically identical at every plotted scale point, the plotting boundary merges them into one legend entry such as:
+The x-axis is:
 
 ```text
-Voting Hungarian / Auction
+Task batch size (100 robots fixed)
 ```
 
-Near-overlapping but non-identical curves remain separate.
+## Output separation
 
-## Outputs
+The fixed-fleet workload experiment is stored separately from the superseded matched-scale data:
 
 ```text
-results/multitask_peer_cost_scaling/
+results/multitask_peer_cost_fixed100_workload/
 ```
 
 Raw and summary data:
 
 ```text
-scaling_comparison_raw.csv
-scaling_comparison_summary.csv
+workload_comparison_raw.csv
+workload_comparison_summary.csv
 ```
 
-Report-ready CSVs:
+Report tables:
 
 ```text
 report_average_optimality_gap_percent.csv
@@ -329,22 +332,80 @@ report_exact_optimal_assignment_percent.csv
 report_valid_proposal_rate_percent.csv
 ```
 
-Primary figure file:
+Primary figure:
 
 ```text
 average_optimality_gap_percent.png
 ```
 
+Raw/summary output records:
+
+```text
+robots
+voters
+tasks
+capacity_per_robot
+assignment_slots
+method
+method_label
+```
+
+so the fixed fleet and changing workload/capacity remain explicit in the data.
+
+## Recommended real-machine rerun sequence
+
+Before the complete rerun, use a small all-family smoke:
+
+```bash
+python run_multitask_peer_cost_all_optimizers.py \
+  --tasks 50 150 300 \
+  --trials 1 \
+  --max-voters 5 \
+  --voter-batch-size 1 \
+  --include-milp \
+  --include-aco
+```
+
+Then inspect a full-range low-trial trend:
+
+```bash
+python run_multitask_peer_cost_all_optimizers.py \
+  --trials 3 \
+  --max-voters 10 \
+  --voter-batch-size 1 \
+  --include-milp \
+  --include-aco
+```
+
+If runtime is acceptable, the intended complete all-family Experiment 2 rerun is:
+
+```bash
+python run_multitask_peer_cost_all_optimizers.py \
+  --include-milp \
+  --include-aco
+```
+
+That command means:
+
+```text
+100 physical robots
+20 task-batch points from 50 to 1000
+100 trials per point
+all 100 robots vote
+Greedy + Hungarian + Auction + MILP + ACO/Local Search
+30% directed P2P cost-message loss
+```
+
+This may be computationally expensive, especially because ACO and MILP execute receiver-locally. A completed smaller run must not be silently described as the canonical 100-trial all-voter run.
+
 ## Interpretation boundary
 
-The x-axis represents matched system scale (`robots = simultaneous tasks`), not increasing task utilization inside a fixed fleet.
+The new x-axis is increasing **task workload in a fixed 100-robot fleet**.
 
-Runs using `--max-voters` measure a capped-voter preview and must not be described as full-voter scaling.
+It is not matched robot/task scaling and it is not a claim that one robot physically executes `capacity_per_robot` tasks simultaneously.
 
-MILP scaling claims are allowed only for runs that explicitly enabled `--include-milp` or `--only-milp` and completed successfully.
+Runs with `--max-voters` are capped-voter previews.
 
-A `--only-milp` result contains the Oracle reference plus Voting MILP only; it is intended for adding the previously unmeasured MILP point/curve to a separately generated paired preview, not for claiming an in-file multi-method comparison by itself.
-
-ACO scaling claims are not supported by this experiment yet.
+MILP or ACO workload-scaling claims are allowed only when those flags were enabled and the run completed successfully.
 
 The proposal-support consensus stage remains a controlled centralized boundary and must not be described as fully asynchronous decentralized consensus.
