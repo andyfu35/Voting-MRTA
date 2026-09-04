@@ -2,201 +2,280 @@
 
 Historical continuity through `2026-09-03 - Fix 100-Task Auction Convergence` remains preserved verbatim in `docs/CHANGE_CONTINUITY_ARCHIVE_20260903.md`.
 
-The subsequent entries for `2026-09-03 - Direct vs Voting Optimizer Ablation`, `2026-09-04 - Multi-Task Optimizer Family Screening`, and `2026-09-04 - Fix MILP Numerical Exactness Boundary` are preserved exactly in Git at:
+The entries for Direct-vs-Voting ablation, optimizer-family screening, the MILP numerical boundary, and the superseded complete-information all-optimizer report-table plan are preserved exactly in Git. The immediately preceding active continuity state is:
 
 ```text
-commit: 1917f5bf449bb6daad2b13a17476084cdad245aa
-blob:   62015eca6577cdd5cf2150791309bdd412dedcbe
+commit: aa0689d32f158eda6982ad84b5b7250ef2492e40
+blob:   c425c8773611a01d46001593c56e7a23c54987d1
 ```
 
-This second documentation compaction changes no experiment or runtime behavior; it only keeps the active continuity file small enough for reliable future updates.
+This compaction changes documentation layout only; no experiment behavior is changed by moving older active continuity into Git history.
 
-## 2026-09-04 - All-Optimizer Report Table and Canonical Rerun Suite
+## 2026-09-04 - Expand Experiment 2 to Five Optimizers under Lossy P2P Voting
 
 ### Purpose
-Prepare the final single-cost report cycle so every reported optimizer comparison is paired and reproducible before report writing begins.
+Replace the report-facing complete-information optimizer table with the experiment that directly matches the research question: multiple optimizer families operating inside the same 30% lossy P2P Voting pipeline.
 
-The user explicitly requested that all canonical experiments be rerun and that the multi-task optimizer table include multiple algorithm families. The new report-facing optimizer comparison therefore places `Hungarian`, `Auction`, `MILP`, `ACO + Local Search`, and `Greedy Baseline` on the same 100 paired complete-information scenarios at each task count.
+The user identified that the existing multi-task P2P experiment contained only Greedy, Hungarian, and Auction. This change adds MILP and ACO + Local Search while preserving the exact same paired robot/task and packet-loss scenarios used by the previous three methods.
 
-Robust Optimization and multi-objective success/time/energy cost models remain deliberately excluded from this report cycle. The scalar spatial cost remains the only task cost.
+The canonical report-facing Experiment 2 is now:
 
-Before this change, repository-root `AGENTS.md` and `docs/AI_CHANGE_PROTOCOL.md` were rechecked and remain absent. The current continuity, `docs/multitask_voting_mrta.md`, `docs/multitask_optimizer_screening.md`, `run_multitask_peer_cost_experiment.py`, `run_multitask_optimizer_screening.py`, and `run_multitask_voting_ablation.py` owner functions were read before implementation.
+```text
+Hungarian Oracle
+Voting Greedy
+Voting Hungarian
+Voting Auction
+Voting MILP
+Voting ACO + Local Search
+```
+
+Robust Optimization and success/time/energy multi-objective costs remain deliberately excluded. The scalar spatial cost is unchanged.
+
+Before code modification, repository-root `AGENTS.md` and `docs/AI_CHANGE_PROTOCOL.md` were checked in order and remain absent. `docs/CHANGE_CONTINUITY.md`, `docs/multitask_voting_mrta.md`, the actual P2P owner `run_multitask_peer_cost_experiment.py`, and the MILP/ACO owner functions in `run_multitask_optimizer_screening.py` were read before the change. The optimizer-screening canonical document was also re-read when its reusable solver contract was updated.
 
 ### Files
-- `run_multitask_all_optimizer_experiment.py`
-- `docs/multitask_all_optimizer.md`
+- `run_multitask_optimizer_screening.py`
+- `run_multitask_peer_cost_all_optimizers.py`
+- `docs/multitask_voting_mrta.md`
+- `docs/multitask_optimizer_screening.md`
 - `docs/report_experiment_suite.md`
 - `docs/CHANGE_CONTINUITY.md`
 
 ### Owner and named functions
-New bounded report-facing experiment owner: `run_multitask_all_optimizer_experiment.py`.
 
-- diagnostic boundary: `fail`
-- solver-family cost equality boundary: `cost_match_tolerance_percent`
-- one-matrix Auction adaptation: `solve_single_auction_assignment`
-- per-method result evaluation: `evaluate_method`
-- exact optimizer pre-sweep gate: `validate_exact_optimizer_contract`
-- timed optimizer execution boundary: `solve_timed`
-- paired scenario/trial owner: `run_trial`
-- aggregation owner: `summarize_results`
-- full sweep owner: `run_experiment`
-- report table owner: `report_table`
-- readable terminal table owner: `readable_report_table`
-- persistence/plot owners: `save_outputs`, `save_metric_plot`
+#### Existing optimizer-family owner: `run_multitask_optimizer_screening.py`
 
-No optimizer implementation was copied into the new experiment.
+- MILP solve owner: `solve_milp_assignment`
+- ACO candidate owner: `select_aco_candidates`
+- one-ant construction owner: `construct_aco_assignment`
+- ACO local-search owner: `improve_aco_assignment_locally`
+- ACO solve owner: `solve_aco_assignment`
+- ACO configuration contract: `validate_aco_config`
 
-Shared owners reused directly:
+The MILP/ACO algorithms were not copied into the new experiment. Their true existing owner was extended so the same solver implementations can accept receiver-local incomplete cost matrices.
 
-From `run_multitask_peer_cost_experiment.py`:
-- `generate_spatial_cost_matrix`
-- `solve_hungarian_assignment`
-- `solve_batched_auction_assignments`
-- `solve_sequential_greedy`
-- `assignment_total_cost`
-- `validate_experiment_config`
+#### New Experiment 2 orchestration owner: `run_multitask_peer_cost_all_optimizers.py`
 
-From `run_multitask_optimizer_screening.py`:
-- `ACOConfig`
-- `solve_aco_assignment`
-- `solve_milp_assignment`
-- `validate_aco_config`
-- `MILP_NUMERICAL_TOLERANCE_PERCENT`
+- experiment diagnostic boundary: `fail`
+- method-specific numerical equality boundary: `cost_match_tolerance_percent`
+- deterministic ACO receiver RNG owner: `aco_receiver_seed`
+- local proposal output contract: `validate_local_proposal`
+- extended local proposal orchestration: `solve_extended_local_optimizer_proposals`
+- shared Voting path: `optimizer_consensus_assignment`
+- zero-loss exact gate: `validate_zero_loss_optimizer_contract`
+- final result evaluation: `evaluate_assignment`
+- paired scenario owner: `run_trial`
+- summary owner: `summarize_results`
+- sweep owner: `run_experiment`
+- report/persistence owners: `report_table`, `save_report_tables`, `save_metric_plot`, `save_outputs`
+
+Existing communication, cost, Hungarian, Greedy, Auction, support, and consensus owners remain in `run_multitask_peer_cost_experiment.py` and are imported rather than copied.
 
 ### Responsibility movement
-No existing optimizer, communication, Voting, or ablation responsibility moved.
+No communication, consensus, or existing P2P optimizer responsibility moved.
 
-The new experiment is orchestration only: it gives one generated complete-information scenario to five existing optimizer families and records quality/runtime metrics. Auction is adapted only by adding a singleton receiver dimension before calling the existing batched Auction owner; no second Auction implementation exists.
+MILP and ACO remain owned by `run_multitask_optimizer_screening.py`; only their accepted cost-domain contract changed from "all finite only" to "finite values plus `+inf` unavailable edges" so they can be reused by a P2P receiver-local experiment.
 
-The canonical rerun sequence is documented separately in `docs/report_experiment_suite.md`; no wrapper changes existing experiment behavior.
+The new Experiment 2 file owns only orchestration across optimizer families, deterministic ACO per-receiver RNG derivation, local proposal validation, paired trials, aggregation, and report outputs.
 
-### Paired-scenario contract
-For every `(task_count, trial)` pair in the all-optimizer table:
-
-```text
-trial_seed = seed + task_count * 100003 + trial * 1009
-```
-
-One cost matrix is generated exactly once and shared by all five methods.
-
-ACO receives a deterministic independent search stream:
-
-```text
-aco_seed = trial_seed + 7000003
-```
-
-The ACO search RNG does not regenerate or alter robot/task geometry, costs, or other methods' inputs.
-
-This establishes the report rule:
-
-```text
-same scenario -> same cost matrix -> different algorithms
-```
-
-For communication experiments, the existing owners continue to enforce:
-
-```text
-same scenario -> same cost matrix + same packet-loss realization -> different algorithms/paths
-```
+No second MILP implementation, second ACO state machine, second packet-loss generator, second Voting consensus implementation, or fallback-to-Hungarian repair was introduced.
 
 ### Preserved behavior
 - `RANDOM_SEED = 20260903`.
 - 100 robots.
+- 30% independent directed sender->receiver scalar task-cost packet loss.
+- 100 trials per task-count/method point.
 - task counts `5,10,20,30,40,50,60,70,80,90,100`.
-- default 100 trials per reported task-count point.
-- spatial scalar cost `0.05 + EuclideanDistance`.
+- scalar cost `0.05 + EuclideanDistance`.
 - one simultaneous task per robot.
-- existing Hungarian, Auction, MILP, ACO + Local Search, and Greedy implementations.
-- existing ACO fixed search budget.
-- existing MILP numerical tolerance and `mip_rel_gap=0.0` behavior.
-- existing single-task P2P experiment.
-- existing 30% lossy P2P multi-task experiment.
-- existing Direct-vs-Voting ablation.
-- no Robust Optimization or multi-objective cost model.
+- task delivery remains reliable.
+- final proposal collection remains reliable/in-window in this controlled stage.
+- missing receiver-local costs remain represented as `+inf`.
+- existing Greedy, Hungarian, Auction, support, and consensus implementations are unchanged.
+- existing Auction epsilon-scaling behavior is unchanged.
+- existing MILP `mip_rel_gap=0.0` and `MILP_NUMERICAL_TOLERANCE_PERCENT=1e-6` are unchanged.
+- existing ACO parameters/search budget are unchanged.
+- previous complete-information screening remains reproducible because its matrices are fully finite, so the new missing-edge branches are inactive there.
+- Direct-vs-Voting ablation remains unchanged and still covers Hungarian/Auction only.
 
-### Deliberately added behavior
-A new report-facing complete-information table contains all five optimizer families:
-
-```text
-Hungarian
-Auction
-MILP
-ACO + Local Search
-Greedy Baseline
-```
-
-The terminal report tables round display values for readability while saved raw/summary CSV values remain unrounded.
-
-The report-facing rerun suite is now explicitly defined as:
-
-```bash
-python run_peer_cost_majority_experiment.py
-python run_multitask_all_optimizer_experiment.py
-python run_multitask_peer_cost_experiment.py
-python run_multitask_voting_ablation.py
-```
-
-The older four-method `run_multitask_optimizer_screening.py` dataset remains valid development evidence but is superseded as the final report optimizer-family table because Auction was absent from it.
-
-### Exact optimizer diagnostic contract
-Before the all-optimizer sweep, `validate_exact_optimizer_contract` checks task counts `1,5,50,100`.
-
-- Auction must match Hungarian within `OPTIMAL_COST_TOLERANCE_PERCENT`.
-- MILP must match Hungarian within `MILP_NUMERICAL_TOLERANCE_PERCENT`.
-- ACO + Local Search and Greedy are intentionally not exact-gated.
-
-Representative failure boundaries:
+### Paired-scenario contract
+For each task count, the new Experiment 2 intentionally keeps the exact previous P2P RNG schedule:
 
 ```text
-owner=run_multitask_all_optimizer_experiment
-function=validate_exact_optimizer_contract
+rng = default_rng(seed + task_count * 100003)
+```
+
+Each trial consumes this shared stream in the same order as the previous three-optimizer experiment:
+
+```text
+generate cost matrix
+generate packet-loss visibility tensor
+generate task order
+generate tie priority
+```
+
+No optimizer consumes that shared RNG afterward.
+
+Therefore Voting Greedy, Voting Hungarian, and Voting Auction should reproduce the previous canonical three-method results when the same seed/configuration is used.
+
+ACO receives a separate deterministic per-receiver stream:
+
+```text
+seed
++ 7000003
++ task_count * 100003
++ trial * 1009
++ receiver * 10000019
+```
+
+This makes ACO reproducible without changing any other method's scenario.
+
+### Deliberately changed behavior
+
+#### MILP missing-edge support
+`solve_milp_assignment` now accepts finite values plus `+inf`.
+
+For every unavailable edge:
+
+```text
+upper_bound(x_ij) = 0
+```
+
+The missing edge is therefore mathematically forbidden. No large artificial objective penalty is used.
+
+`NaN` and `-inf` fail at:
+
+```text
+owner=run_multitask_optimizer_screening
+function=solve_milp_assignment
+category=data
+code=INVALID_MILP_COST
+```
+
+If the incomplete graph has no complete feasible assignment, the function returns `None` and the calling experiment marks that receiver proposal invalid.
+
+#### ACO missing-edge support
+`solve_aco_assignment` now accepts finite values plus `+inf`.
+
+`select_aco_candidates` already filters on finite cost, so missing edges cannot enter ant construction.
+
+On complete information, the Greedy seed path is unchanged. On incomplete information, when the Greedy seed fails, ACO no longer immediately returns `None`; it continues the normal ant search and can still recover a feasible assignment.
+
+`NaN` and `-inf` fail at:
+
+```text
+owner=run_multitask_optimizer_screening
+function=solve_aco_assignment
+category=data
+code=INVALID_ACO_COST
+```
+
+#### New report-facing Experiment 2
+`run_multitask_peer_cost_all_optimizers.py` now generates one receiver-cost tensor per trial and runs all five optimizer families on it before the shared support/Voting consensus boundary.
+
+MILP/ACO proposals are validated before Voting. A selected unavailable edge, invalid robot index, capacity violation, or wrong proposal shape fails at the first `validate_local_proposal` diagnostic boundary rather than being repaired.
+
+### Zero-loss diagnostic contract
+Before the formal 30% sweep, the new owner checks task counts `1,5,50,100`.
+
+Required exact behavior:
+
+- Voting Hungarian matches Oracle cost within the generic exact tolerance.
+- Voting Auction matches Oracle cost within the generic exact tolerance.
+- Voting MILP matches Oracle cost within `1e-6%` MILP numerical tolerance.
+- single-task Voting Greedy matches Oracle cost.
+- exact-method receiver proposals are 100% valid at zero loss.
+
+Representative failures:
+
+```text
+owner=run_multitask_peer_cost_all_optimizers
+function=validate_zero_loss_optimizer_contract
 category=planning
-code=EXACT_OPTIMIZER_NOT_HUNGARIAN
+code=ZERO_LOSS_PROPOSAL_FAILURE
 ```
 
-Per-trial exact failures use:
+or:
 
 ```text
-owner=run_multitask_all_optimizer_experiment
-function=run_trial
+owner=run_multitask_peer_cost_all_optimizers
+function=validate_zero_loss_optimizer_contract
 category=planning
-code=EXACT_OPTIMIZER_NOT_EXACT
+code=ZERO_LOSS_NOT_ORACLE_CONSISTENT
 ```
 
-Unknown method/configuration failures remain `contract` category diagnostics.
+ACO is intentionally not exact-gated because it is a stochastic metaheuristic.
 
-### Report data acceptance contract
-Only 100-trial canonical datasets may be used in the report.
+### Report outputs
+Authoritative Experiment 2 output root:
 
-Smoke runs using 3, 10, or 20 trials are validation only and must not be merged into final tables or plots.
+```text
+results/multitask_peer_cost_all_optimizers/
+```
 
-Before report writing starts:
+Primary metrics:
 
-1. every canonical rerun command must finish without exception;
-2. every reported configuration must contain 100 trials;
-3. all exact optimizer pre-sweep gates must pass;
-4. all final CSVs must be regenerated after the final code version;
-5. partial datasets from a run that terminated before `save_outputs` must be discarded;
-6. report tables may round for presentation, but calculations must use raw values.
+- average optimality gap percent;
+- optimal-cost match percent;
+- near-optimal within 5% percent;
+- exact optimal assignment percent;
+- average valid local proposal rate percent.
+
+Terminal display values are rounded for readability; CSV values remain unrounded.
+
+### Report-suite change
+The complete-information `run_multitask_all_optimizer_experiment.py` is no longer a required main report experiment. It remains supporting/development evidence only.
+
+The report now has three main controlled stories:
+
+1. single-task communication robustness;
+2. five optimizer families inside the same lossy P2P Voting experiment;
+3. Direct-vs-Voting causal ablation.
 
 ### Validation performed
-- `run_multitask_all_optimizer_experiment.py` passed Python bytecode compilation locally.
-- The new experiment only imports already-used canonical optimizer owners; full integration execution is pending the user's repository run.
-- The user's preceding full four-method optimizer screening successfully completed all task counts and 100 trials per point after the MILP numerical-boundary fix. That completed run confirmed the existing Hungarian/MILP/ACO/Greedy owners execute successfully on the user's environment.
-- Auction's zero-loss/full-information exactness was already validated by the canonical P2P experiment; the new all-optimizer owner additionally rechecks it before its own sweep.
+- `run_multitask_peer_cost_all_optimizers.py` passed Python bytecode compilation.
+- A focused standalone MILP/ACO regression verified:
+  - complete finite MILP still matches Hungarian;
+  - incomplete MILP never selects a `+inf` edge;
+  - incomplete ACO can construct a valid finite-edge assignment;
+  - clearly infeasible missing-edge cases return `None` for MILP and ACO.
+- An interface-compatible end-to-end smoke verified:
+  - zero-loss exact contract path;
+  - one shared P2P scenario feeding all five optimizer methods;
+  - shared support/Voting consensus;
+  - summary generation;
+  - CSV/figure persistence;
+  - readable six-column terminal tables including the Oracle.
+- The interface-compatible smoke used a simplified Auction stub and is not formal repository result data. The user's real repository smoke remains required before the 100-trial canonical run.
 
 ### Known limitations / unfinished risks
-- The new five-method all-optimizer experiment has not yet completed a smoke or full run on the user's machine.
-- The complete-information all-optimizer table is not evidence of communication robustness; P2P loss and Voting remain separate controlled experiments.
-- The lossy P2P multi-task table still compares P2P Greedy/Hungarian/Auction only. MILP and ACO are not silently presented as lossy-P2P results.
-- Direct-vs-Voting ablation still isolates Hungarian/Auction only. Generalizing the ablation to ACO/MILP is a later explicit experiment, not implied by the new table.
-- Runtime measurements are machine-dependent and should be reported with the user's execution environment noted.
+- The new five-optimizer lossy experiment has not yet been executed on the user's real repository environment.
+- MILP and especially ACO now solve one local optimization problem per receiver; the formal run is computationally much heavier than the previous three-method P2P experiment.
+- ACO is stochastic approximate optimization, so it is not expected to match Hungarian/Auction/MILP exactly even at complete information.
+- Valid proposal rate is especially important for ACO at high task load because incomplete local views can make construction difficult.
+- The current Direct-vs-Voting ablation still tests Hungarian and Auction only. This change must not be used to claim Direct-vs-Voting uplift for MILP or ACO.
+- The shared proposal-support consensus remains a controlled centralized boundary; do not describe it as fully asynchronous decentralized consensus.
 
 ### Next step
-Pull the new report experiment, run a 3-trial smoke for task counts `5 20 100`, then run the four canonical report experiments from `docs/report_experiment_suite.md` from the beginning. Paste the final terminal tables/results back for report analysis. Do not begin the final report from mixed old/new datasets.
+On the user's machine:
+
+```bash
+git pull
+python run_multitask_peer_cost_all_optimizers.py --tasks 5 20 100 --trials 3
+```
+
+Only if that smoke reaches all three task counts, saves outputs, and prints all five Voting optimizer columns should the formal run begin:
+
+```bash
+python run_multitask_peer_cost_all_optimizers.py
+```
+
+After the formal 100-trial run, verify that the Greedy/Hungarian/Auction columns reproduce the preceding canonical P2P results, then use the new MILP/ACO columns for the report's optimizer-family comparison.
 
 ### Commit SHA
-- `eaa8aef458913d4adfbe52f97d902b68fdbb5f98` - added `run_multitask_all_optimizer_experiment.py`
-- `2868f2f62551fc82395e345a1367bad415afdcdc` - added `docs/multitask_all_optimizer.md`
-- `f67e8b7a8cd414b0b09eeb26a5da3e91aff437c8` - added `docs/report_experiment_suite.md`
-- `5f431da22c3c6c06b0e6f6d26a264573d19531de` - recorded this continuity entry
+- `0bc8aaa81576f77fc1a85800d63bcc3426b63907` - extended existing MILP/ACO owners for `+inf` unavailable edges.
+- `c65d2c40c6d254073b9a4a795b52128eebbf35f1` - added the five-optimizer lossy P2P Voting Experiment 2 owner.
+- `beeeb25437021f0621b49dde56a5660220ac4a2b` - updated the canonical multi-task Voting specification.
+- `b69441e26318cf47fa47b629a40457af9ba61561` - updated the optimizer-owner reusable missing-edge contract.
+- `f3022c0033d0883f0d6b56cc3c972d0456a2dae7` - updated the canonical report experiment suite.
+- continuity update commit: this file's commit.
