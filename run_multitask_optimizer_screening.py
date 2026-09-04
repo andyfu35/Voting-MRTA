@@ -155,21 +155,31 @@ def build_milp_assignment_model(
 
 
 def solve_milp_assignment(costs: np.ndarray) -> np.ndarray | None:
-    """Solve the same capacity-one assignment objective as a binary MILP."""
+    """Solve capacity-one assignment; +inf edges are treated as unavailable."""
     if costs.ndim != 2 or costs.shape[0] < costs.shape[1]:
         fail("solve_milp_assignment", "contract", "INVALID_COST_MATRIX", f"shape={costs.shape}")
-    if np.any(~np.isfinite(costs)):
+    if np.any(np.isnan(costs)) or np.any(np.isneginf(costs)):
         fail(
             "solve_milp_assignment",
             "data",
-            "NONFINITE_MILP_COST",
-            "optimizer screening requires a complete finite cost matrix",
+            "INVALID_MILP_COST",
+            "cost matrix may contain finite values or +inf unavailable edges only",
         )
 
+    finite = np.isfinite(costs)
+    if not finite.any(axis=0).all():
+        return None
+
     robot_count, task_count = costs.shape
-    constraint, bounds, integrality = build_milp_assignment_model(robot_count, task_count)
+    constraint, _, integrality = build_milp_assignment_model(robot_count, task_count)
+    variable_count = robot_count * task_count
+    bounds = Bounds(
+        np.zeros(variable_count),
+        finite.reshape(-1).astype(float),
+    )
+    objective = np.where(finite, costs, 0.0).reshape(-1)
     result = milp(
-        c=costs.reshape(-1),
+        c=objective,
         integrality=integrality,
         bounds=bounds,
         constraints=constraint,
@@ -184,6 +194,8 @@ def solve_milp_assignment(costs: np.ndarray) -> np.ndarray | None:
     if np.any(solution[assignment, tasks] < 0.5):
         return None
     if len(np.unique(assignment)) != task_count:
+        return None
+    if np.any(~finite[assignment, tasks]):
         return None
     return assignment
 
@@ -318,25 +330,27 @@ def solve_aco_assignment(
     rng: np.random.Generator,
     config: ACOConfig,
 ) -> np.ndarray | None:
-    """Run ACO with fixed parameters plus a named local refinement boundary."""
+    """Run ACO + local search; +inf edges are treated as unavailable."""
     if costs.ndim != 2 or costs.shape[0] < costs.shape[1]:
         fail("solve_aco_assignment", "contract", "INVALID_COST_MATRIX", f"shape={costs.shape}")
-    if np.any(~np.isfinite(costs)):
+    if np.any(np.isnan(costs)) or np.any(np.isneginf(costs)):
         fail(
             "solve_aco_assignment",
             "data",
-            "NONFINITE_ACO_COST",
-            "optimizer screening requires a complete finite cost matrix",
+            "INVALID_ACO_COST",
+            "cost matrix may contain finite values or +inf unavailable edges only",
         )
-
-    greedy_seed = solve_sequential_greedy(costs, task_order)
-    if greedy_seed is None:
+    if not np.isfinite(costs).any(axis=0).all():
         return None
 
+    greedy_seed = solve_sequential_greedy(costs, task_order)
     robot_count, task_count = costs.shape
     tasks = np.arange(task_count)
-    best_assignment = greedy_seed.copy()
-    best_cost = assignment_total_cost(costs, best_assignment)
+    best_assignment: np.ndarray | None = None
+    best_cost = np.inf
+    if greedy_seed is not None:
+        best_assignment = greedy_seed.copy()
+        best_cost = assignment_total_cost(costs, best_assignment)
     pheromone = np.ones((robot_count, task_count), dtype=float)
 
     for _ in range(config.iterations):
@@ -361,12 +375,13 @@ def solve_aco_assignment(
                 min(config.local_search_moves, task_count),
             )
             iteration_best_cost = assignment_total_cost(costs, iteration_best)
-            if iteration_best_cost < best_cost:
+            if best_assignment is None or iteration_best_cost < best_cost:
                 best_assignment = iteration_best.copy()
                 best_cost = iteration_best_cost
             pheromone[iteration_best, tasks] += 1.0 / max(iteration_best_cost, 1e-12)
 
-        pheromone[best_assignment, tasks] += config.elite_weight / max(best_cost, 1e-12)
+        if best_assignment is not None:
+            pheromone[best_assignment, tasks] += config.elite_weight / max(best_cost, 1e-12)
 
     return best_assignment
 
