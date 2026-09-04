@@ -240,3 +240,123 @@ Run the canonical 100-trial screening on the user's machine. Inspect optimal-cos
 - `d3fb0d7143cd0367585dc95305a5417fc162458f` - added `run_multitask_optimizer_screening.py`
 - `a8dd3bdf243b3fe63d666a012802c9739e23fba7` - added canonical optimizer-screening specification
 - continuity update commit: this file's commit
+
+## 2026-09-04 - Fix MILP Numerical Exactness Boundary
+
+### Purpose
+Fix the first full optimizer-screening run stopping at `tasks=100, trial=7` with `run_trial / planning / MILP_NOT_EXACT`. The reported gap was `5.2467347189941e-07%`, far below a meaningful optimization difference, but larger than the repository's generic `1e-8%` exact-cost tolerance. The failure was a solver-specific floating-point equality issue, not evidence that the MILP formulation was optimizing a different assignment objective.
+
+Before this change, repository-root `AGENTS.md` and `docs/AI_CHANGE_PROTOCOL.md` were rechecked and remain absent. The current `docs/CHANGE_CONTINUITY.md`, canonical `docs/multitask_optimizer_screening.md`, and exact owner functions `solve_milp_assignment`, `evaluate_method`, `validate_exact_optimizer_contract`, and `run_trial` were read before modification.
+
+### Files
+- `run_multitask_optimizer_screening.py`
+- `docs/multitask_optimizer_screening.md`
+- `docs/CHANGE_CONTINUITY.md`
+
+### Owner and named functions
+MILP numerical exactness remains owned entirely by `run_multitask_optimizer_screening.py`.
+
+- MILP optimization owner: `solve_milp_assignment`
+- solver-family equality tolerance owner: `cost_match_tolerance_percent`
+- per-result metric boundary: `evaluate_method`
+- pre-sweep exactness gate: `validate_exact_optimizer_contract`
+- per-trial exactness gate: `run_trial`
+
+No global assignment tolerance or other experiment owner was changed.
+
+### Responsibility movement
+The previous implementation reused `OPTIMAL_COST_TOLERANCE_PERCENT = 1e-8%` for every optimizer family. That tolerance remains unchanged for Hungarian, ACO + Local Search, Greedy, the P2P optimizer experiment, and Voting experiments.
+
+MILP now owns its own numerical equality tolerance:
+
+```text
+MILP_NUMERICAL_TOLERANCE_PERCENT = 1e-6
+```
+
+`cost_match_tolerance_percent` is the single named boundary selecting MILP's solver-specific tolerance for `optimal_cost_match`; all other screening methods retain the generic tolerance.
+
+### Preserved behavior
+- same 100-robot cost model and task counts.
+- same 100 paired trials per task count.
+- same Hungarian reference and true-cost evaluation.
+- same binary MILP formulation and constraints.
+- same ACO + Local Search implementation and fixed search budget.
+- same Greedy baseline.
+- same random seeds and paired cost matrices.
+- packet loss and Voting remain disabled in this screening.
+- no fallback from MILP to Hungarian was added.
+- MILP assignments are still returned by HiGHS and are not repaired or replaced using the Hungarian solution.
+
+### Deliberately changed behavior
+`solve_milp_assignment` now explicitly requests:
+
+```text
+mip_rel_gap = 0.0
+```
+
+so no nonzero user MIP-gap target can terminate the MILP solve.
+
+MILP/Hungarian objective equality is now accepted when:
+
+```text
+abs(gap_percent) <= 1e-6
+```
+
+This is a relative objective difference of `1e-8`, and is still much stricter than any report-level near-optimal threshold.
+
+The `optimal_cost_match` metric uses the same MILP-specific numerical tolerance, so a trial accepted by the MILP exactness contract cannot later be inconsistently reported as a non-match solely because it used the generic tighter tolerance.
+
+### Diagnostic contract
+A genuine MILP disagreement still aborts at the first owner boundary.
+
+Pre-sweep:
+
+```text
+owner=run_multitask_optimizer_screening
+function=validate_exact_optimizer_contract
+category=planning
+code=MILP_NOT_HUNGARIAN_EXACT
+```
+
+Per trial:
+
+```text
+owner=run_multitask_optimizer_screening
+function=run_trial
+category=planning
+code=MILP_NOT_EXACT
+```
+
+Both diagnostics now report `expected_abs_gap_percent<=1e-6` and the actual gap.
+
+### Validation performed
+The user's failing case was reproduced with the canonical seed at `tasks=100, trial=7`.
+
+- Hungarian true cost: approximately `15.151402216370842`.
+- MILP true cost: approximately `15.15140229586623`.
+- absolute true-cost difference: approximately `7.95e-8`.
+- percentage gap: `5.2467347189941e-7%`.
+- the MILP solution was fully integral and feasible.
+- only two tasks exchanged two robots relative to Hungarian, producing an almost tied objective.
+
+A focused regression over all 100 canonical trials at `tasks=100` found:
+
+- 99 trials with zero MILP/Hungarian true-cost gap at the reported precision.
+- 1 trial above the old `1e-8%` generic tolerance: trial 7.
+- maximum observed gap: `5.2467347189941e-7%`.
+- 0 trials above the new `1e-6%` MILP numerical tolerance.
+
+Setting `mip_rel_gap=0.0` alone does not remove this trial-7 difference because the remaining discrepancy is a double-precision near-tie, which is why the solver-specific equality boundary is also required.
+
+### Known limitations / unfinished risks
+- The user's aborted 5-90 task progress is not a complete formal dataset because execution stopped before `save_outputs`; the canonical full sweep must be rerun from the beginning.
+- MILP may return a different integral assignment from Hungarian when two assignments are numerically almost tied; `exact_optimal_assignment_percent` intentionally remains separate and is not relaxed.
+- The MILP-specific tolerance must not be reused for ACO, Greedy, Voting, or other owners without a separate justified change.
+
+### Next step
+Pull the numerical-boundary fix and rerun `python run_multitask_optimizer_screening.py`. Only a run that reaches `tasks=100/100 complete`, saves the CSVs, and prints all four report tables is the formal optimizer-screening dataset.
+
+### Commit SHA
+- `5bc6d14d428f98f136e180624313a5673e88a305` - MILP numerical exactness owner fix
+- `c47b04d76830a0059f728a1e11edfc0884b12122` - canonical numerical-tolerance specification update
+- continuity update commit: this file's commit
