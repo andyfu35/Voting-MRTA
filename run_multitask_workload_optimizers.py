@@ -127,27 +127,33 @@ def solve_min_cost_flow_capacitated(
         return None
 
     source = 0
-    robot_nodes = 1 + np.arange(robot_count, dtype=np.int64)
-    task_nodes = 1 + robot_count + np.arange(task_count, dtype=np.int64)
+    robot_nodes = 1 + np.arange(robot_count, dtype=np.int32)
+    task_nodes = 1 + robot_count + np.arange(task_count, dtype=np.int32)
     sink = 1 + robot_count + task_count
 
-    source_starts = np.full(robot_count, source, dtype=np.int64)
+    source_starts = np.full(robot_count, source, dtype=np.int32)
     source_ends = robot_nodes
     source_caps = np.full(robot_count, capacity_per_robot, dtype=np.int64)
     source_costs = np.zeros(robot_count, dtype=np.int64)
 
-    edge_starts = 1 + robot_indices.astype(np.int64)
-    edge_ends = 1 + robot_count + task_indices.astype(np.int64)
+    edge_starts = 1 + robot_indices.astype(np.int32)
+    edge_ends = 1 + robot_count + task_indices.astype(np.int32)
     edge_caps = np.ones(robot_indices.size, dtype=np.int64)
     edge_costs = quantize_min_cost_flow_costs(costs)
 
     sink_starts = task_nodes
-    sink_ends = np.full(task_count, sink, dtype=np.int64)
+    sink_ends = np.full(task_count, sink, dtype=np.int32)
     sink_caps = np.ones(task_count, dtype=np.int64)
     sink_costs = np.zeros(task_count, dtype=np.int64)
 
-    start_nodes = np.concatenate((source_starts, edge_starts, sink_starts))
-    end_nodes = np.concatenate((source_ends, edge_ends, sink_ends))
+    start_nodes = np.concatenate((source_starts, edge_starts, sink_starts)).astype(
+        np.int32,
+        copy=False,
+    )
+    end_nodes = np.concatenate((source_ends, edge_ends, sink_ends)).astype(
+        np.int32,
+        copy=False,
+    )
     capacities = np.concatenate((source_caps, edge_caps, sink_caps))
     unit_costs = np.concatenate((source_costs, edge_costs, sink_costs))
 
@@ -161,7 +167,7 @@ def solve_min_cost_flow_capacitated(
     supplies = np.zeros(sink + 1, dtype=np.int64)
     supplies[source] = task_count
     supplies[sink] = -task_count
-    solver.set_nodes_supplies(np.arange(sink + 1, dtype=np.int64), supplies)
+    solver.set_nodes_supplies(np.arange(sink + 1, dtype=np.int32), supplies)
     status = solver.solve()
     if status != solver.OPTIMAL:
         return None
