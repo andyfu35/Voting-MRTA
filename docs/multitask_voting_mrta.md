@@ -15,8 +15,8 @@ robot_count = 100
 The canonical task-batch sweep is:
 
 ```text
-50, 100, 150, 200, 250, 300, 350, 400, 450, 500,
-550, 600, 650, 700, 750, 800, 850, 900, 950, 1000 tasks
+100, 200, 300, 400, 500,
+600, 700, 800, 900, 1000 tasks
 ```
 
 These are **task batches / allocation workload**, not claims that one physical robot executes multiple tasks simultaneously.
@@ -30,9 +30,8 @@ capacity_per_robot = ceil(T / 100)
 Examples:
 
 ```text
-T=50   -> capacity 1
 T=100  -> capacity 1
-T=150  -> capacity 2
+T=200  -> capacity 2
 T=500  -> capacity 5
 T=1000 -> capacity 10
 ```
@@ -135,7 +134,7 @@ No optimizer receives a different capacity model.
 
 - Physical robots: `100` fixed.
 - Directed P2P scalar task-cost packet loss: `30%`.
-- Task batches: `50..1000` in steps of `50`.
+- Task batches: `100..1000` in steps of `100`.
 - Uniform per-robot batch capacity: `ceil(tasks/100)`.
 - Formal trials per reported task count: `100` unless explicitly revised later.
 - Canonical formal mode uses all `100` physical robots as voters.
@@ -354,24 +353,26 @@ so the fixed fleet and changing workload/capacity remain explicit in the data.
 
 ## Recommended real-machine rerun sequence
 
-Before the complete rerun, use a small all-family smoke:
+A completed macOS timing probe at `T=1000`, one trial, one voter, with all five optimizer families took about `85.44 s` wall time. This is a runtime probe only, not report data.
+
+On a new machine, first reproduce that boundary:
 
 ```bash
 python run_multitask_peer_cost_all_optimizers.py \
-  --tasks 50 150 300 \
+  --tasks 1000 \
   --trials 1 \
-  --max-voters 5 \
+  --max-voters 1 \
   --voter-batch-size 1 \
   --include-milp \
   --include-aco
 ```
 
-Then inspect a full-range low-trial trend:
+Then inspect the complete canonical task range at low cost:
 
 ```bash
 python run_multitask_peer_cost_all_optimizers.py \
-  --trials 3 \
-  --max-voters 10 \
+  --trials 1 \
+  --max-voters 5 \
   --voter-batch-size 1 \
   --include-milp \
   --include-aco
@@ -389,7 +390,7 @@ That command means:
 
 ```text
 100 physical robots
-20 task-batch points from 50 to 1000
+10 task-batch points from 100 to 1000 in steps of 100
 100 trials per point
 all 100 robots vote
 Greedy + Hungarian + Auction + MILP + ACO/Local Search
@@ -400,7 +401,7 @@ This may be computationally expensive, especially because ACO and MILP execute r
 
 ## Interpretation boundary
 
-The new x-axis is increasing **task workload in a fixed 100-robot fleet**.
+The x-axis is increasing **task workload in a fixed 100-robot fleet**.
 
 It is not matched robot/task scaling and it is not a claim that one robot physically executes `capacity_per_robot` tasks simultaneously.
 
