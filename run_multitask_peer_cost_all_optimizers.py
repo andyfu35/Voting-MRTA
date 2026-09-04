@@ -7,6 +7,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from run_multitask_optimizer_screening import (
+    MILP_NUMERICAL_TOLERANCE_PERCENT,
+    solve_milp_assignment,
+)
 from run_multitask_peer_cost_experiment import (
     DEFAULT_TRIALS,
     NEAR_OPTIMAL_GAP_PERCENT,
@@ -22,18 +26,21 @@ from run_multitask_peer_cost_experiment import (
 )
 
 SCALING_TASK_COUNTS = (50, 100, 200, 400, 600, 800, 1000)
-VOTING_METHODS = ("p2p_greedy", "p2p_hungarian", "p2p_auction")
-METHODS = ("oracle",) + VOTING_METHODS
+DEFAULT_VOTING_METHODS = ("p2p_greedy", "p2p_hungarian", "p2p_auction")
+OPTIONAL_VOTING_METHODS = ("p2p_milp",)
+REPORT_METHOD_ORDER = ("oracle",) + DEFAULT_VOTING_METHODS + OPTIONAL_VOTING_METHODS
 METHOD_LABELS = {
     "oracle": "Hungarian Oracle",
     "p2p_greedy": "Voting Greedy",
     "p2p_hungarian": "Voting Hungarian",
     "p2p_auction": "Voting Auction",
+    "p2p_milp": "Voting MILP",
 }
 DEFAULT_VOTER_BATCH_SIZE = 8
 DEFAULT_PROGRESS_EVERY_VOTERS = 25
 VOTER_SELECTION_SEED_OFFSET = 2_000_003
 VISIBILITY_SEED_OFFSET = 4_000_007
+MILP_ZERO_LOSS_CHECK_MAX_SIZE = 50
 
 ROOT = Path(__file__).resolve().parent
 RESULT_DIR = ROOT / "results" / "multitask_peer_cost_scaling"
@@ -47,6 +54,22 @@ def fail(function: str, category: str, code: str, details: str) -> None:
         "owner=run_multitask_peer_cost_all_optimizers "
         f"function={function} category={category} code={code} details={details}"
     )
+
+
+def cost_match_tolerance_percent(method: str) -> float:
+    """Return the objective-match tolerance owned by each active optimizer family."""
+    if method == "p2p_milp":
+        return MILP_NUMERICAL_TOLERANCE_PERCENT
+    if method in REPORT_METHOD_ORDER:
+        return OPTIMAL_COST_TOLERANCE_PERCENT
+    fail("cost_match_tolerance_percent", "contract", "UNKNOWN_METHOD", f"method={method}")
+
+
+def resolve_voting_methods(include_milp: bool) -> tuple[str, ...]:
+    """Resolve the default fast methods plus an explicitly requested MILP probe."""
+    if include_milp:
+        return DEFAULT_VOTING_METHODS + OPTIONAL_VOTING_METHODS
+    return DEFAULT_VOTING_METHODS
 
 
 def validate_scaling_config(
@@ -175,6 +198,41 @@ def build_voter_batch_cost_views(costs: np.ndarray, visibility: np.ndarray) -> n
     return np.where(visibility, costs[None, :, :], np.inf)
 
 
+def solve_milp_batch_proposals(receiver_costs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Run the true MILP owner once per receiver-local incomplete matrix."""
+    if receiver_costs.ndim != 3:
+        fail(
+            "solve_milp_batch_proposals",
+            "contract",
+            "INVALID_BATCH_COST_SHAPE",
+            f"shape={receiver_costs.shape}",
+        )
+    receiver_count, _, task_count = receiver_costs.shape
+    proposals = np.full((receiver_count, task_count), -1, dtype=int)
+    valid = np.zeros(receiver_count, dtype=bool)
+    for receiver in range(receiver_count):
+        proposal = solve_milp_assignment(receiver_costs[receiver])
+        if proposal is None:
+            continue
+        proposals[receiver] = proposal
+        valid[receiver] = True
+    return proposals, valid
+
+
+def solve_voter_batch_proposals(
+    *,
+    method: str,
+    receiver_costs: np.ndarray,
+    task_order: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Route one voter batch to the existing optimizer owner without duplicating algorithms."""
+    if method in DEFAULT_VOTING_METHODS:
+        return solve_local_optimizer_proposals(method, receiver_costs, task_order)
+    if method == "p2p_milp":
+        return solve_milp_batch_proposals(receiver_costs)
+    fail("solve_voter_batch_proposals", "contract", "UNKNOWN_METHOD", f"method={method}")
+
+
 def accumulate_proposal_support(
     *,
     support: np.ndarray,
@@ -218,14 +276,15 @@ def collect_voting_support(
     progress_every_voters: int,
     task_count: int,
     trial: int,
+    voting_methods: tuple[str, ...],
 ) -> tuple[dict[str, np.ndarray], dict[str, int]]:
     """Stream voter-local views in bounded batches and accumulate support per optimizer."""
     robot_count = costs.shape[0]
     support_by_method = {
         method: np.zeros((robot_count, task_count), dtype=np.int32)
-        for method in VOTING_METHODS
+        for method in voting_methods
     }
-    valid_counts = {method: 0 for method in VOTING_METHODS}
+    valid_counts = {method: 0 for method in voting_methods}
 
     next_progress = progress_every_voters
     total_voters = len(voter_indices)
@@ -240,8 +299,12 @@ def collect_voting_support(
         )
         receiver_costs = build_voter_batch_cost_views(costs, visibility)
 
-        for method in VOTING_METHODS:
-            proposals, valid = solve_local_optimizer_proposals(method, receiver_costs, task_order)
+        for method in voting_methods:
+            proposals, valid = solve_voter_batch_proposals(
+                method=method,
+                receiver_costs=receiver_costs,
+                task_order=task_order,
+            )
             valid_counts[method] += accumulate_proposal_support(
                 support=support_by_method[method],
                 proposals=proposals,
@@ -271,10 +334,11 @@ def finalize_voting_assignments(
     tie_priority: np.ndarray,
     task_count: int,
     trial: int,
+    voting_methods: tuple[str, ...],
 ) -> dict[str, tuple[np.ndarray, float]]:
     """Convert accumulated proposal support into one final assignment per Voting method."""
     results: dict[str, tuple[np.ndarray, float]] = {}
-    for method in VOTING_METHODS:
+    for method in voting_methods:
         valid_count = valid_counts[method]
         if valid_count == 0:
             fail(
@@ -297,7 +361,11 @@ def solve_zero_loss_consensus(
 ) -> tuple[np.ndarray, float]:
     """Run one complete-information local proposal through the same support consensus boundary."""
     receiver_costs = costs[None, :, :]
-    proposals, valid = solve_local_optimizer_proposals(method, receiver_costs, task_order)
+    proposals, valid = solve_voter_batch_proposals(
+        method=method,
+        receiver_costs=receiver_costs,
+        task_order=task_order,
+    )
     if not bool(valid[0]):
         fail(
             "solve_zero_loss_consensus",
@@ -309,8 +377,12 @@ def solve_zero_loss_consensus(
     return solve_support_consensus(support, tie_priority), 100.0
 
 
-def validate_zero_loss_optimizer_contract(seed: int, max_task_count: int) -> None:
-    """Check exact local optimizers at representative matched-scale sizes before the sweep."""
+def validate_zero_loss_optimizer_contract(
+    seed: int,
+    max_task_count: int,
+    voting_methods: tuple[str, ...],
+) -> None:
+    """Check exact optimizer integrations without turning preflight into a large MILP run."""
     single_rng = np.random.default_rng(seed + 91_001)
     single_costs = generate_spatial_cost_matrix(5, 1, single_rng)
     single_order = np.array([0], dtype=int)
@@ -386,6 +458,49 @@ def validate_zero_loss_optimizer_contract(seed: int, max_task_count: int) -> Non
                     ),
                 )
 
+    if "p2p_milp" in voting_methods:
+        size = min(MILP_ZERO_LOSS_CHECK_MAX_SIZE, max_task_count)
+        if size >= 2:
+            rng = np.random.default_rng(seed + 191_173 + size * 100_003)
+            costs = generate_spatial_cost_matrix(size, size, rng)
+            task_order = rng.permutation(size)
+            tie_priority = rng.random((size, size))
+            oracle = solve_hungarian_assignment(costs)
+            if oracle is None:
+                fail(
+                    "validate_zero_loss_optimizer_contract",
+                    "planning",
+                    "ORACLE_INFEASIBLE",
+                    f"method=p2p_milp robots={size} tasks={size}",
+                )
+            oracle_cost = assignment_total_cost(costs, oracle)
+            assignment, valid_rate = solve_zero_loss_consensus(
+                method="p2p_milp",
+                costs=costs,
+                task_order=task_order,
+                tie_priority=tie_priority,
+            )
+            if valid_rate != 100.0:
+                fail(
+                    "validate_zero_loss_optimizer_contract",
+                    "planning",
+                    "ZERO_LOSS_PROPOSAL_FAILURE",
+                    f"method=p2p_milp robots={size} tasks={size} valid_rate={valid_rate}",
+                )
+            actual_cost = assignment_total_cost(costs, assignment)
+            gap_percent = 100.0 * (actual_cost - oracle_cost) / oracle_cost
+            if abs(gap_percent) > MILP_NUMERICAL_TOLERANCE_PERCENT:
+                fail(
+                    "validate_zero_loss_optimizer_contract",
+                    "planning",
+                    "ZERO_LOSS_NOT_ORACLE_CONSISTENT",
+                    (
+                        f"method=p2p_milp robots={size} tasks={size} "
+                        f"expected_abs_gap_percent<={MILP_NUMERICAL_TOLERANCE_PERCENT} "
+                        f"actual={gap_percent}"
+                    ),
+                )
+
 
 def evaluate_assignment(
     *,
@@ -415,7 +530,7 @@ def evaluate_assignment(
         "total_cost": total_cost,
         "optimal_total_cost": optimal_cost,
         "optimality_gap_percent": gap_percent,
-        "optimal_cost_match": abs(gap_percent) <= OPTIMAL_COST_TOLERANCE_PERCENT,
+        "optimal_cost_match": abs(gap_percent) <= cost_match_tolerance_percent(method),
         "near_optimal_5pct": gap_percent <= NEAR_OPTIMAL_GAP_PERCENT + 1e-12,
         "exact_optimal_assignment": bool(np.array_equal(assignment, optimal_assignment)),
         "valid_proposal_rate_percent": valid_proposal_rate_percent,
@@ -431,6 +546,7 @@ def run_trial(
     max_voters: int | None,
     voter_batch_size: int,
     progress_every_voters: int,
+    voting_methods: tuple[str, ...],
 ) -> list[dict[str, object]]:
     """Run one paired matched-scale trial with robot_count == task_count."""
     robot_count = task_count
@@ -469,6 +585,7 @@ def run_trial(
         progress_every_voters=progress_every_voters,
         task_count=task_count,
         trial=trial,
+        voting_methods=voting_methods,
     )
     voting_results = finalize_voting_assignments(
         support_by_method=support_by_method,
@@ -477,6 +594,7 @@ def run_trial(
         tie_priority=tie_priority,
         task_count=task_count,
         trial=trial,
+        voting_methods=voting_methods,
     )
 
     records = [
@@ -494,7 +612,7 @@ def run_trial(
             valid_proposal_rate_percent=100.0,
         )
     ]
-    for method in VOTING_METHODS:
+    for method in voting_methods:
         assignment, valid_rate = voting_results[method]
         records.append(
             evaluate_assignment(
@@ -540,6 +658,7 @@ def run_experiment(
     max_voters: int | None = None,
     voter_batch_size: int = DEFAULT_VOTER_BATCH_SIZE,
     progress_every_voters: int = DEFAULT_PROGRESS_EVERY_VOTERS,
+    include_milp: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Run the matched robot/task scaling sweep through 1000 tasks."""
     validate_scaling_config(
@@ -550,9 +669,17 @@ def run_experiment(
         voter_batch_size=voter_batch_size,
         progress_every_voters=progress_every_voters,
     )
-    validate_zero_loss_optimizer_contract(seed, max(task_counts))
-    print("Zero-loss optimizer contract: PASS (Hungarian/Auction match Oracle; single-task Greedy matches Oracle)")
-    print("Experiment 2 scaling: robot_count == task_count; MILP and ACO are excluded from this sweep")
+    voting_methods = resolve_voting_methods(include_milp)
+    validate_zero_loss_optimizer_contract(seed, max(task_counts), voting_methods)
+    gate_methods = "Hungarian/Auction"
+    if include_milp:
+        gate_methods += "/MILP"
+    print(
+        "Zero-loss optimizer contract: PASS "
+        f"({gate_methods} match Oracle under their numerical contracts; single-task Greedy matches Oracle)"
+    )
+    print("Experiment 2 scaling: robot_count == task_count")
+    print("Voting methods: " + ", ".join(METHOD_LABELS[method] for method in voting_methods))
     print(
         "Voting receivers: "
         + ("all robots" if max_voters is None else f"up to {max_voters} sampled robots (preview mode)")
@@ -576,6 +703,7 @@ def run_experiment(
                     max_voters=max_voters,
                     voter_batch_size=voter_batch_size,
                     progress_every_voters=progress_every_voters,
+                    voting_methods=voting_methods,
                 )
             )
         print(f"tasks=robots={task_count:4d}/{max(task_counts)} complete")
@@ -590,9 +718,13 @@ def ensure_output_dirs() -> None:
 
 
 def report_table(summary: pd.DataFrame, metric: str) -> pd.DataFrame:
-    """Return one scale-by-method report table in canonical display order."""
+    """Return one scale-by-method report table in stable display order."""
     table = summary.pivot(index="tasks", columns="method_label", values=metric)
-    labels = [METHOD_LABELS[method] for method in METHODS]
+    labels = [
+        METHOD_LABELS[method]
+        for method in REPORT_METHOD_ORDER
+        if METHOD_LABELS[method] in table.columns
+    ]
     return table.reindex(columns=labels).reset_index()
 
 
@@ -608,6 +740,46 @@ def save_report_tables(summary: pd.DataFrame) -> None:
         report_table(summary, metric).to_csv(DATA_DIR / filename, index=False)
 
 
+def combine_plot_label(methods: tuple[str, ...]) -> str:
+    """Combine exactly overlapping Voting series into one readable legend label."""
+    names = [METHOD_LABELS[method].removeprefix("Voting ") for method in methods]
+    return "Voting " + " / ".join(names)
+
+
+def build_plot_series_groups(
+    summary: pd.DataFrame,
+    metric: str,
+) -> list[tuple[tuple[str, ...], pd.DataFrame]]:
+    """Group only numerically identical method curves; near-overlaps remain separate."""
+    groups: list[tuple[tuple[str, ...], pd.DataFrame]] = []
+    for method in REPORT_METHOD_ORDER[1:]:
+        part = summary[summary["method"] == method].sort_values("tasks")
+        if part.empty:
+            continue
+        matched_index: int | None = None
+        for index, (_, reference) in enumerate(groups):
+            same_tasks = np.array_equal(
+                part["tasks"].to_numpy(),
+                reference["tasks"].to_numpy(),
+            )
+            same_values = np.allclose(
+                part[metric].to_numpy(dtype=float),
+                reference[metric].to_numpy(dtype=float),
+                rtol=0.0,
+                atol=1e-12,
+                equal_nan=True,
+            )
+            if same_tasks and same_values:
+                matched_index = index
+                break
+        if matched_index is None:
+            groups.append(((method,), part))
+        else:
+            methods, reference = groups[matched_index]
+            groups[matched_index] = (methods + (method,), reference)
+    return groups
+
+
 def save_metric_plot(
     summary: pd.DataFrame,
     *,
@@ -616,11 +788,10 @@ def save_metric_plot(
     filename: str,
     y_limits: tuple[float, float] | None = None,
 ) -> None:
-    """Save a line-only report plot for the Voting methods; Oracle remains in CSV tables."""
+    """Save a line-only report plot; exactly overlapping curves share one legend entry."""
     fig, ax = plt.subplots(figsize=(10, 6))
-    for method in VOTING_METHODS:
-        part = summary[summary["method"] == method].sort_values("tasks")
-        ax.plot(part["tasks"], part[metric], label=METHOD_LABELS[method])
+    for methods, part in build_plot_series_groups(summary, metric):
+        ax.plot(part["tasks"], part[metric], label=combine_plot_label(methods))
     ax.set_xlabel("Matched robot / simultaneous task count")
     ax.set_ylabel(ylabel)
     if y_limits is not None:
@@ -633,7 +804,7 @@ def save_metric_plot(
 
 
 def save_outputs(raw: pd.DataFrame, summary: pd.DataFrame) -> None:
-    """Persist the new scaling dataset separately from the old 100-robot Experiment 2 data."""
+    """Persist the scaling dataset separately from the old fixed-100-robot data."""
     ensure_output_dirs()
     raw.to_csv(DATA_DIR / "scaling_comparison_raw.csv", index=False)
     summary.to_csv(DATA_DIR / "scaling_comparison_summary.csv", index=False)
@@ -641,7 +812,7 @@ def save_outputs(raw: pd.DataFrame, summary: pd.DataFrame) -> None:
     save_metric_plot(
         summary,
         metric="average_optimality_gap_percent",
-        ylabel="Average optimality gap (%)",
+        ylabel="Cost error from minimum (%)",
         filename="average_optimality_gap_percent.png",
     )
     save_metric_plot(
@@ -649,13 +820,6 @@ def save_outputs(raw: pd.DataFrame, summary: pd.DataFrame) -> None:
         metric="optimal_cost_match_percent",
         ylabel="Optimal-cost match rate (%)",
         filename="optimal_cost_match_percent.png",
-        y_limits=(0.0, 100.0),
-    )
-    save_metric_plot(
-        summary,
-        metric="near_optimal_5pct_percent",
-        ylabel="Trials within 5% of optimum (%)",
-        filename="near_optimal_5pct_percent.png",
         y_limits=(0.0, 100.0),
     )
 
@@ -672,8 +836,8 @@ def parse_task_counts(values: list[int] | None) -> tuple[int, ...]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Scale the lossy P2P Voting experiment to matched robot/task counts through 1000, "
-            "using Greedy, Hungarian, and Auction only."
+            "Scale the lossy P2P Voting experiment to matched robot/task counts through 1000. "
+            "Greedy, Hungarian, and Auction are enabled by default; MILP is an optional probe."
         )
     )
     parser.add_argument(
@@ -715,6 +879,14 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_PROGRESS_EVERY_VOTERS,
         help="Print progress after roughly this many completed voting receivers (default: 25).",
     )
+    parser.add_argument(
+        "--include-milp",
+        action="store_true",
+        help=(
+            "Also run Voting MILP on the same receiver views. This is intentionally optional "
+            "because MILP is slower than the default three methods."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -729,6 +901,7 @@ def main() -> None:
         max_voters=args.max_voters,
         voter_batch_size=args.voter_batch_size,
         progress_every_voters=args.progress_every_voters,
+        include_milp=args.include_milp,
     )
     save_outputs(raw, summary)
 
@@ -737,7 +910,7 @@ def main() -> None:
     print(DATA_DIR / "scaling_comparison_summary.csv")
     print(FIGURE_DIR)
 
-    print("\nAverage optimality gap (%) - lower is better:")
+    print("\nCost error from minimum (%) - lower is better:")
     print(
         report_table(summary, "average_optimality_gap_percent").to_string(
             index=False,
@@ -753,7 +926,7 @@ def main() -> None:
         )
     )
 
-    print("\nTrials within 5% of optimum (%) - higher is better:")
+    print("\nTrials within 5% of optimum (%) - supporting metric:")
     print(
         report_table(summary, "near_optimal_5pct_percent").to_string(
             index=False,
