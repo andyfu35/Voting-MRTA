@@ -41,25 +41,23 @@ Fast heuristic algorithms are owned separately by:
 run_multitask_workload_heuristics.py
 ```
 
-The existing capacity-one Auction implementation remains owned by:
-
-```text
-run_multitask_peer_cost_experiment.py::solve_batched_auction_assignments
-```
-
-The full-information minimum-cost reference remains the existing Hungarian owner:
+The Hungarian assignment algorithm used by both the full-information Oracle and the receiver-local exact comparison remains owned by:
 
 ```text
 run_multitask_peer_cost_experiment.py::solve_hungarian_assignment
 ```
 
+The Experiment 2 adapter only performs capacity-slot representation, receiver-local routing, physical mapping, Voting support, and evaluation.
+
 ## Why the optimizer set changed
 
-A real macOS timing probe of the preceding five-family design used `1000` tasks, one trial, one voter, and Greedy/Hungarian/Auction/MILP/ACO + Local Search. It took about `85.44 s` wall time. Scaling that receiver-local MILP/ACO design to all voters and repeated trials was incompatible with the user's approximately one-hour experiment budget.
+A real macOS timing probe of the earlier five-family design used `1000` tasks, one trial, one voter, and Greedy/Hungarian/Auction/MILP/ACO + Local Search. It took about `85.44 s` wall time. Scaling receiver-local MILP/ACO to all voters and repeated trials was incompatible with the approximately one-hour experiment budget.
 
-Therefore report-facing Experiment 2 now isolates the Voting/communication scaling question with computationally scalable local solvers. MILP and ACO + Local Search are not deleted from the repository; they remain available in the separate complete-information optimizer screening and are not part of the canonical lossy workload sweep.
+The first fast redesign retained Voting Auction. A real all-voter macOS timing preview using task points `100, 500, 1000`, two trials per point, and four worker processes took `193.18 s` wall time. Extrapolating that measured workload to ten task points and 20 trials was still roughly `1 h 47 min` before considering run-to-run variation.
 
-Receiver-local Hungarian is also removed from the canonical Voting set because Auction already provides the exact assignment-family comparison while avoiding another nearly redundant exact local curve.
+Therefore the report-facing lossy workload experiment now uses three fast heuristics plus receiver-local Hungarian. MILP and ACO + Local Search remain in the separate complete-information optimizer screening. Auction also remains implemented in its existing owner but is no longer part of the canonical lossy workload sweep.
+
+The reason for choosing Voting Hungarian instead of Voting Auction is runtime, not a change in objective. Both are exact assignment-family solvers under complete information in the tested integration contract, while prior paired runs repeatedly showed the same or nearly identical final Voting cost. Hungarian is expected to reduce receiver-local runtime substantially on this workload.
 
 ## Canonical compared methods
 
@@ -70,10 +68,12 @@ Hungarian Oracle                full-information minimum-cost reference only
 Voting Sequential Greedy       fast heuristic
 Voting Global Greedy           fast heuristic
 Voting Static Regret-2 Greedy  fast heuristic
-Voting Auction                 exact local assignment family
+Voting Hungarian               exact receiver-local assignment family
 ```
 
 The Oracle is retained in CSV output but is not plotted as a quality curve; `0%` on the cost-error axis is the minimum-cost reference.
+
+This means the primary Experiment 2 figure normally contains **four plotted optimizer curves**. The Oracle is a reference baseline, not a fifth plotted curve.
 
 ## Fast heuristic definitions
 
@@ -110,23 +110,32 @@ run_multitask_workload_heuristics.py::compute_static_regret2_priority
 run_multitask_workload_heuristics.py::solve_regret2_greedy_capacitated
 ```
 
-### Voting Auction
+### Voting Hungarian
 
-Auction continues to use the existing epsilon-scaling Bertsekas-style owner on capacity slots. Experiment 2 only performs the physical-row to slot-row representation and maps the slot assignment back to physical robots.
+Each physical receiver first obtains its own incomplete `100 x T` physical cost matrix. Capacity-slot expansion then converts it to the existing capacity-one Hungarian representation. The existing Hungarian owner solves that receiver-local incomplete assignment and the slot result is mapped back to physical robot IDs before Voting support is counted.
 
 Routing:
 
 ```text
 run_multitask_peer_cost_all_optimizers.py::solve_voter_batch_proposals
     -> run_multitask_peer_cost_experiment.py::solve_local_optimizer_proposals
-    -> run_multitask_peer_cost_experiment.py::solve_batched_auction_assignments
+    -> run_multitask_peer_cost_experiment.py::solve_hungarian_assignment
 ```
+
+`Voting Hungarian` is not the same experimental condition as `Hungarian Oracle`:
+
+```text
+Hungarian Oracle  = full true cost matrix, one minimum-cost reference solve per trial
+Voting Hungarian  = one incomplete receiver-local solve per voter, then Voting consensus
+```
+
+They share the same mathematical assignment algorithm but differ in information availability and aggregation.
 
 ## Capacity representation
 
-Heuristics now operate directly on physical `100 x T` receiver-local matrices and explicit physical robot capacities. This avoids expanding every heuristic problem to a large slot matrix.
+Heuristics operate directly on physical `100 x T` receiver-local matrices and explicit physical robot capacities. This avoids expanding every heuristic problem to a large slot matrix.
 
-Auction, the full-information Oracle, and final support consensus still use capacity slots because those existing exact owners are capacity-one assignment solvers.
+Voting Hungarian, the full-information Oracle, and final support consensus use capacity slots because the existing exact Hungarian/support owners are capacity-one assignment solvers.
 
 For cost matrix:
 
@@ -209,7 +218,7 @@ Every receiver always knows its own physical sender row. Missing physical robot/
 +inf
 ```
 
-The heuristics treat `+inf` as unavailable. Auction slot copies inherit the same physical visibility state, so capacity expansion never creates information that the receiver did not receive.
+The heuristics treat `+inf` as unavailable. Voting Hungarian slot copies inherit the same physical visibility state, so capacity expansion never creates information that the receiver did not receive.
 
 ## Voting support and final consensus
 
@@ -229,7 +238,7 @@ The proposal-support consensus stage remains a controlled centralized boundary a
 
 ### Receiver batching
 
-Receivers are still streamed in bounded batches inside each trial. Batch size changes memory/runtime only; it does not alter selected voters, visibility samples, proposals, or final support for a fixed configuration.
+Receivers are streamed in bounded batches inside each trial. Batch size changes memory/runtime only; it does not alter selected voters, visibility samples, proposals, or final support for a fixed configuration.
 
 ### Trial process parallelism
 
@@ -267,13 +276,13 @@ Preflight is bounded and separated by optimizer family:
 
 ```text
 validate_zero_loss_heuristic_contracts
-validate_zero_loss_auction_contract
+validate_zero_loss_hungarian_contract
 validate_zero_loss_optimizer_contract
 ```
 
 The heuristic gate requires all three fast heuristics to return valid capacity-feasible proposals with complete information at bounded task loads up to 200.
 
-The Auction gate additionally requires complete-information Auction cost to match the capacitated Hungarian reference at bounded task loads up to 200 within the existing exact numerical tolerance.
+The Voting Hungarian gate additionally requires complete-information receiver-local Hungarian cost to match the capacitated Hungarian Oracle at bounded task loads up to 200 within the existing exact numerical tolerance.
 
 Heuristics are not incorrectly required to equal the Oracle.
 
@@ -397,17 +406,17 @@ all 100 robots vote
 Voting Sequential Greedy
 Voting Global Greedy
 Voting Static Regret-2 Greedy
-Voting Auction
+Voting Hungarian
 Hungarian Oracle as full-information minimum reference
 up to 4 independent trial worker processes
 ```
 
-The one-hour target is a runtime objective, not yet a validated guarantee. The user's macOS machine must rerun the new timing preview because the preceding `85.44 s` probe measured the removed MILP/ACO design.
+The one-hour target remains a runtime objective, not a guarantee. The user's Mac should rerun the three-point all-voter timing preview after this exact-method swap before starting the full 20-trial run.
 
 ## Interpretation and paper-reference boundary
 
 The report should describe Experiment 2 as **fixed-fleet workload scaling under incomplete peer cost information and Voting aggregation**.
 
-MILP and ACO results belong to the separate optimizer screening unless a new explicit experiment is defined later. Do not imply that the new lossy workload curve evaluated those solvers.
+MILP, ACO, and Auction results belong to prior/supporting optimizer studies unless a new explicit experiment is defined later. Do not imply that the new canonical lossy workload curve evaluated those solvers.
 
-For the paper bibliography, cite the Hungarian assignment reference for the Oracle and the Bertsekas Auction reference for Voting Auction. The three greedy variants are explicitly defined experiment baselines in this project; do not attach an unrelated optimizer citation merely because their names contain `Greedy` or `Regret-2`.
+For the paper bibliography, cite the Hungarian assignment reference for both the full-information Oracle and Voting Hungarian. They are two information/aggregation conditions using the same underlying assignment algorithm. The three greedy variants are explicitly defined experiment baselines in this project; do not attach an unrelated optimizer citation merely because their names contain `Greedy` or `Regret-2`.
