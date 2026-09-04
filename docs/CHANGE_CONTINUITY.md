@@ -1,246 +1,184 @@
 # Change Continuity
 
-Historical continuity through `2026-09-04 - Narrow Experiment 2 to 100-Task Steps and Hand Off to Windows Runtime` is preserved exactly in Git at:
+Historical continuity through `2026-09-04 - Replace Slow Lossy Optimizers with Fast Heuristics and Parallel Trials` is preserved exactly in Git at:
 
 ```text
-commit: 5534ccfbb57cae6bdf0d31aa0a1b881f2e577b92
-blob:   d96ca1fc86de4a0c45a5e570a28bdbbcd6b9af14
+commit: 838a715e340791f500db2880f0010d9d7af6069c
+blob:   e1f098316ed33bf5a40e0fdd00975c683c6d21ea
 ```
 
-## 2026-09-04 - Replace Slow Lossy Optimizers with Fast Heuristics and Parallel Trials
+## 2026-09-04 - Replace Voting Auction with Voting Hungarian for the One-Hour Runtime Target
 
 ### Purpose
-The user decided to keep Experiment 2 on the Mac and target an approximately one-hour end-to-end runtime. The preceding fixed-100-robot design still executed receiver-local Hungarian, MILP, and ACO + Local Search. A real macOS probe at `1000` tasks, one trial, one voter, with all five optimizer families took about `85.44 s`, making the full all-voter repeated experiment impractical.
-
-The report-facing lossy workload experiment now focuses on communication loss + Voting with:
+The user completed the all-voter parallel timing preview for the first fast Experiment 2 redesign:
 
 ```text
-Voting Sequential Greedy
-Voting Global Greedy
-Voting Static Regret-2 Greedy
-Voting Auction
-Hungarian Oracle as full-information minimum reference
+task points = 100, 500, 1000
+trials per point = 2
+voters = all 100 robots
+workers = 4
+methods = Sequential Greedy, Global Greedy, Static Regret-2 Greedy, Auction
+wall time = 193.18 s
 ```
 
-The canonical Experiment 2 trial count is deliberately reduced from `100` to `20` per task point while retaining all `100` physical voters. Independent `(task_count, trial)` jobs are parallelized with a bounded process pool, defaulting to up to four workers.
+That measured preview extrapolates to roughly `1 h 47 min` for the canonical ten task points x 20 trials if runtime scales similarly, so it still misses the approximately one-hour target.
 
-Before modification, repository-root `AGENTS.md` and `docs/AI_CHANGE_PROTOCOL.md` were checked in that order and remain absent. Then `docs/CHANGE_CONTINUITY.md`, canonical `docs/multitask_voting_mrta.md`, the actual Experiment 2 owner `run_multitask_peer_cost_all_optimizers.py`, its exact capacity/routing/trial/report functions, the existing Greedy/Auction owner functions in `run_multitask_peer_cost_experiment.py`, and `docs/report_experiment_suite.md` were read before writing.
+The user approved replacing receiver-local Voting Auction with receiver-local Voting Hungarian while keeping the three fast heuristics, all 100 voters, 20 trials per task point, the fixed 100-robot workload contract, and four-process trial parallelism.
+
+Before modification, repository-root `AGENTS.md` and `docs/AI_CHANGE_PROTOCOL.md` were checked in that order and remain absent. Then `docs/CHANGE_CONTINUITY.md`, canonical `docs/multitask_voting_mrta.md`, actual owner `run_multitask_peer_cost_all_optimizers.py`, exact owner function `solve_voter_batch_proposals`, exact preflight functions, and true Hungarian owner `run_multitask_peer_cost_experiment.py::solve_hungarian_assignment` were read before writing.
 
 ### Files
-- `run_multitask_workload_heuristics.py` - new true owner for the three fast capacitated heuristic algorithms.
-- `run_multitask_peer_cost_all_optimizers.py` - canonical Experiment 2 routing, Voting, evaluation, and parallel trial execution.
-- `docs/multitask_voting_mrta.md` - canonical specification.
-- `docs/report_experiment_suite.md` - report-authoritative rerun contract.
-- `docs/CHANGE_CONTINUITY.md` - this continuity record.
+- `run_multitask_peer_cost_all_optimizers.py`
+- `docs/multitask_voting_mrta.md`
+- `docs/report_experiment_suite.md`
+- `docs/CHANGE_CONTINUITY.md`
 
-The existing optimizer-screening module and Experiment 1/3 owners were not modified.
+No heuristic-owner implementation changed.
 
 ### Owner and named functions
-
-Fast heuristic owner:
-
-```text
-run_multitask_workload_heuristics.py
-```
-
-Named boundaries:
-
-- `validate_capacitated_problem`
-- `solve_sequential_greedy_capacitated`
-- `solve_global_greedy_capacitated`
-- `compute_static_regret2_priority`
-- `solve_regret2_greedy_capacitated`
-- `solve_capacitated_heuristic`
-- `solve_capacitated_heuristic_batch`
-
-Experiment 2 owner:
+Experiment 2 remains owned by:
 
 ```text
 run_multitask_peer_cost_all_optimizers.py
 ```
 
-Important named boundaries:
+Changed named boundaries:
 
-- method selection: `resolve_voting_methods`
-- workload/runtime validation: `validate_workload_config`
-- capacity representation: `resolve_robot_capacity`, `build_capacity_slot_cost_matrix`, `build_capacity_slot_cost_views`, `map_slot_assignments_to_robots`
-- capacity validation/evaluation: `validate_capacity_assignment`, `assignment_total_cost_with_capacity`
-- Oracle: `solve_capacity_oracle`
-- communication: `sample_voter_batch_visibility`, `build_voter_batch_cost_views`
-- local routing: `solve_voter_batch_proposals`
-- support/Voting: `accumulate_proposal_support`, `collect_voting_support`, `solve_capacity_support_consensus`, `finalize_voting_assignments`
-- bounded preflight: `validate_zero_loss_heuristic_contracts`, `validate_zero_loss_auction_contract`, `validate_zero_loss_optimizer_contract`
-- paired trial: `run_trial`
-- parallel runtime: `run_trial_job`, `build_trial_jobs`, `configure_worker_thread_environment`, `report_trial_completion`, `execute_trial_jobs`
-- sweep/report: `run_experiment`, `summarize_results`, `save_outputs`
+- method-set ownership: `resolve_voting_methods`
+- receiver-local exact routing: `solve_voter_batch_proposals`
+- exact preflight: `validate_zero_loss_hungarian_contract`
+- combined preflight: `validate_zero_loss_optimizer_contract`
+- experiment reporting: `run_experiment`
 
-The Auction algorithm remains owned by:
-
-```text
-run_multitask_peer_cost_experiment.py::solve_batched_auction_assignments
-```
-
-The full-information minimum remains owned by:
+The actual Hungarian algorithm remains owned by:
 
 ```text
 run_multitask_peer_cost_experiment.py::solve_hungarian_assignment
 ```
 
+Experiment 2 does not duplicate Hungarian or create a second exact solver state machine.
+
 ### Responsibility movement
-The three new greedy algorithms are not wrappers around another owner. They now have one dedicated optimizer owner and operate directly on physical `100 x T` receiver-local cost matrices plus explicit physical capacity.
+No responsibility moved to a wrapper.
 
-Sequential/Global/Static-Regret heuristics therefore no longer require slot expansion. Capacity slots remain only where required by existing capacity-one exact owners: Hungarian Oracle, Voting Auction, and final support consensus.
+The Experiment 2 adapter already owns capacity-slot representation and receiver-local routing. It now routes the exact local branch to existing `p2p_hungarian` instead of existing `p2p_auction`.
 
-Trial semantics remain in `run_trial`; deterministic job construction is in `build_trial_jobs`; process execution is in `execute_trial_jobs`. Worker scheduling never enters a seed formula.
+The true optimization algorithm remains in the existing Hungarian owner. The full-information Oracle also uses that same owner, but under a different information condition.
 
 ### Preserved behavior
-- `100` physical robots fixed.
-- Canonical task batches `100, 200, ..., 1000`.
-- `30%` directed P2P scalar cost-message loss.
-- Scalar cost `0.05 + EuclideanDistance`.
-- `capacity_per_robot = ceil(tasks/100)`.
-- Task counts are allocation batches, not simultaneous execution claims.
-- Every receiver always knows its own sender row.
-- Missing receiver-local costs remain `+inf` unavailable edges.
-- Task delivery and final proposal collection remain reliable/in-window in this controlled stage.
-- All Voting methods share the same cost matrix, voters, packet loss, task order, tie priority, and capacity within each trial.
-- Support remains physical robot/task support; final consensus uses the same capacity contract and no hidden true-cost tie-break.
-- Hungarian Oracle remains the minimum-cost reference.
-- Primary report metric remains direct cost error from the minimum.
-- Supporting `<=5%`, optimal-cost match, exact assignment, and valid-proposal-rate CSV fields remain.
-- Output root remains `results/multitask_peer_cost_fixed100_workload/`.
-- Experiment 1 and Experiment 3 remain unchanged.
+- fixed physical fleet: `100` robots;
+- task batches: `100, 200, ..., 1000`;
+- `capacity_per_robot = ceil(tasks/100)`;
+- directed scalar cost-message loss: `30%`;
+- scalar cost: `0.05 + EuclideanDistance`;
+- formal Experiment 2 trials: `20` per task point;
+- formal voters: all `100` robots;
+- default process workers: up to `4`;
+- default receiver batch size: `4`;
+- paired scenario, voter, packet-loss, task-order, tie-priority, and capacity inputs;
+- three fast heuristics and their dedicated owner;
+- physical proposal support and capacitated final Voting consensus;
+- Hungarian Oracle as the full-information minimum-cost reference;
+- primary metric: direct cost error from the minimum;
+- output root and CSV schema;
+- Experiment 1 and Experiment 3.
 
 ### Deliberately changed behavior
-
-Report-facing receiver-local methods removed:
-
-```text
-Voting Hungarian
-Voting MILP
-Voting ACO + Local Search
-```
-
-Their implementations were not deleted. MILP and ACO remain in the separate complete-information optimizer screening. Voting Auction is retained as the exact local assignment-family comparison.
-
-New report-facing methods:
+Canonical report-facing Voting methods are now:
 
 ```text
 Voting Sequential Greedy
 Voting Global Greedy
 Voting Static Regret-2 Greedy
-Voting Auction
+Voting Hungarian
 ```
 
-`Static Regret-2` computes the best-vs-second-best receiver-visible regret once per task, uses paired task order for ties, then assigns tasks in that fixed priority to cheapest robots with remaining capacity. It is not dynamic regret recomputation.
+`Voting Auction` is removed from the canonical lossy workload sweep. Its implementation is not deleted.
 
-Canonical trials changed from `100` to `20` per task point. All `100` physical voters remain enabled.
-
-New runtime option:
+The exact local branch now performs:
 
 ```text
---workers N
+receiver-local physical incomplete cost view
+-> capacity-slot expansion
+-> existing p2p_hungarian / solve_hungarian_assignment owner
+-> slot-to-physical mapping
+-> Voting support
 ```
 
-Default is `min(4, available CPU count)`. `--workers 1` is serial diagnostic mode.
+The figure therefore normally has four optimizer curves. `Hungarian Oracle` remains in the CSV and supplies the `0%` reference, but it is not plotted as a fifth quality curve.
 
-When multiple workers are used, standard BLAS/OpenMP thread-count environment variables default to `1` only if the user did not explicitly set them. Parallel workers suppress receiver-level console progress; the parent process reports trial completion.
+### Why Oracle and Voting Hungarian are not duplicates
 
-Default receiver batch size changes from `8` to `4` to bound per-process memory.
+```text
+Hungarian Oracle
+  full true cost matrix
+  one minimum-cost solve per trial
+  defines C_min
 
-The report-facing CLI no longer exposes `--include-milp`, `--only-milp`, or `--include-aco` because those solvers are no longer part of this experiment's canonical question.
+Voting Hungarian
+  one lossy receiver-local cost matrix per voter
+  100 local proposals per formal trial
+  proposal-support Voting consensus
+```
+
+They use the same underlying assignment algorithm but test different information/aggregation conditions.
 
 ### Diagnostic contract
-Experiment-owner failures keep the standard format:
+The exact preflight boundary is now:
 
 ```text
 owner=run_multitask_peer_cost_all_optimizers
-function=<named function>
-category=<data|time|state|dependency|planning|safety|runtime|contract>
-code=<named code>
+function=validate_zero_loss_hungarian_contract
+category=planning
+code=ZERO_LOSS_NOT_ORACLE_CONSISTENT
 ```
 
-New runtime contract example:
+Unknown method routing still fails at:
 
 ```text
-function=validate_workload_config category=contract code=INVALID_WORKER_COUNT
+owner=run_multitask_peer_cost_all_optimizers
+function=solve_voter_batch_proposals
+category=contract
+code=UNKNOWN_METHOD
 ```
 
-Fast heuristic failures use:
-
-```text
-owner=run_multitask_workload_heuristics
-```
-
-Representative first-failure diagnostics:
-
-```text
-function=validate_capacitated_problem category=data code=INVALID_HEURISTIC_COST
-function=validate_capacitated_problem category=state code=CAPACITY_EXCEEDED
-function=solve_capacitated_heuristic category=contract code=UNKNOWN_METHOD
-```
-
-Auction diagnostics still propagate from its existing true owner.
+True Hungarian owner diagnostics continue to propagate unchanged from `run_multitask_peer_cost_experiment.py`.
 
 ### Validation performed
-- The new heuristic owner was re-fetched from GitHub and inspected across validation, all three algorithms, routing, and receiver-batch execution.
-- The rewritten Experiment 2 owner was re-fetched and inspected across imports/constants, capacity functions, solver routing, bounded zero-loss gates, deterministic trial seeding, process-job creation, process execution, aggregation, and CLI defaults.
-- Canonical/report documents were synchronized with the new method set, 20-trial formal contract, and parallel runtime design.
-- A container-side repository clone/compile attempt was made, but the container still cannot resolve `github.com`; no real repository bytecode/runtime test could be executed there.
-- The previous `85.44 s` Mac result is runtime motivation only; it does not validate the new fast method set.
+- Re-fetched the modified owner after the code commit.
+- Confirmed `DEFAULT_VOTING_METHODS` contains the three heuristic methods plus `p2p_hungarian`.
+- Confirmed `METHOD_LABELS` exposes `Voting Hungarian` and no longer exposes `Voting Auction` in the canonical owner.
+- Confirmed `solve_voter_batch_proposals` routes the exact branch through existing `solve_local_optimizer_proposals("p2p_hungarian", ...)` after capacity-slot expansion.
+- Confirmed the exact preflight is renamed to `validate_zero_loss_hungarian_contract` and compares complete-information Voting Hungarian against the capacitated Hungarian Oracle.
+- Canonical and report-suite documents were synchronized.
+- No repository CI checks are available here; the user's Mac remains the real runtime boundary.
 
 ### Unfinished risks
-- The one-hour target is not yet validated. Voting Auction may still dominate large workloads.
-- Process parallelism increases peak memory; lower `--workers` or `--voter-batch-size` may be needed on smaller Macs.
-- macOS process startup and BLAS behavior depend on the installed Python/NumPy/SciPy stack.
-- Global/Sequential/Static-Regret proposals may legitimately be infeasible under packet loss and tight capacity; this is measured via `valid_proposal_rate_percent` and is never repaired by a hidden fallback.
-- Formal files are still written only after `run_experiment` completes; checkpoint/resume remains a separate future concern.
-- The current one-page placeholder draft still describes the previously considered optimizer set and must be synchronized before final submission after new results exist.
+- The one-hour target is still a target, not a guarantee. The same `100/500/1000 x 2 trials x 100 voters x 4 workers` timing preview must be rerun after this exact-solver swap.
+- Hungarian still uses a capacity-slot matrix; at 1000 tasks this is a `1000 x 1000` local assignment problem per voter, although SciPy's Hungarian path is expected to be substantially faster than the prior Python Auction loop.
+- The three heuristic valid-proposal rates can legitimately fall under severe incomplete information and tight capacity; no hidden fallback is added.
+- Formal outputs are still written only after the complete experiment returns; checkpoint/resume remains separate future work.
 
 ### Next step
-Pull and run the serial smoke:
+Pull and rerun the same measured preview:
 
 ```bash
 git pull
 
 time python run_multitask_peer_cost_all_optimizers.py \
   --tasks 100 500 1000 \
-  --trials 1 \
-  --max-voters 5 \
-  --workers 1
-```
-
-Then measure the all-voter parallel path:
-
-```bash
-time python run_multitask_peer_cost_all_optimizers.py \
-  --tasks 100 500 1000 \
   --trials 2 \
   --workers 4
 ```
 
-If the extrapolation fits the budget, the canonical run is:
+If the measured wall time is sufficiently reduced, run the canonical Experiment 2:
 
 ```bash
 time python run_multitask_peer_cost_all_optimizers.py
 ```
 
-Canonical no-argument meaning:
-
-```text
-100 robots
-100..1000 tasks by 100
-20 trials per point
-100 voters
-30% directed packet loss
-Sequential Greedy + Global Greedy + Static Regret-2 Greedy + Auction
-Hungarian Oracle reference
-up to 4 trial worker processes
-```
-
 ### Commit SHA
-- `7148921855d63644dc39bf250acec350ac36e7c7` - dedicated fast capacitated heuristic owner.
-- `a9ada9d2afaac53030952ed114df77eacb8e8f5c` - fast report-facing Experiment 2 owner and process-parallel runtime.
-- `67aba0cc7394e5e04e5e60ac46ce7151dd0cbf0d` - canonical Experiment 2 specification.
-- `83d8651f933f4620d5d47f53a4a1a1ff49131994` - report experiment suite.
-- `9e8417aee1f946bb6341df196e3c717c5cbf6817` - continuity content for this change block.
+- `50b7c7d0bd9e071740888a6ade98600dc3eebc67` - replace canonical Voting Auction routing/preflight/label with Voting Hungarian.
+- `d5c768a0fc2461d430fa363682dc98d0e566dc17` - update canonical Experiment 2 specification.
+- `8740595f00d66f07e81470951255b8ea09f027db` - update report experiment suite and four-curve contract.
+- continuity update commit: this file's commit.
