@@ -5,11 +5,11 @@ This file defines which experiments must be rerun before report writing and whic
 ## Global report rules
 
 - Use seed `20260903` unless a canonical experiment states otherwise.
-- Use the experiment-specific canonical trial count. Experiment 1 remains 100 trials; Experiment 2 is 20 trials per task point because its runtime contract was explicitly revised.
+- Experiment 1 remains 100 trials. Experiment 2 uses its explicit 20-trial time-budget contract.
 - Smoke/trend runs using fewer trials or a sampled voter cap are preview data only and must not be mixed into formal report tables.
-- Within one comparison, all enabled algorithms must use paired scenarios: the same physical robot/task realization, voter identities, packet-loss realization, task order, tie priority, and capacity contract.
-- Robust Optimization and multi-objective success/time/energy cost models remain excluded from this report cycle.
-- Scalar task cost remains the existing spatial cost.
+- Within one comparison, all methods use paired physical scenario, voter identities, packet-loss realization, task order, tie priority, and capacity.
+- Robust Optimization and multi-objective success/time/energy costs remain excluded from this report cycle.
+- Scalar task cost remains `0.05 + EuclideanDistance`.
 - Partial output from a run that terminates before `save_outputs` is not report data.
 
 ## Experiment 1 - Single-task P2P majority robustness
@@ -26,17 +26,9 @@ Canonical run:
 python run_peer_cost_majority_experiment.py
 ```
 
-Purpose: measure optimal-robot execution success as robot count and directed peer-cost packet loss vary for one task.
-
-Authoritative output root:
-
-```text
-results/peer_cost_majority/
-```
-
 The completed 100-trial Experiment 1 dataset remains report-authoritative.
 
-## Experiment 2 - Fixed 100 robots, fast Voting workload scaling
+## Experiment 2 - Fixed 100 robots, diverse fast Voting optimizers
 
 Canonical owner:
 
@@ -44,13 +36,7 @@ Canonical owner:
 run_multitask_peer_cost_all_optimizers.py
 ```
 
-Fast heuristic owner:
-
-```text
-run_multitask_workload_heuristics.py
-```
-
-Canonical workload contract:
+Canonical workload:
 
 ```text
 physical robots = 100 fixed
@@ -61,64 +47,93 @@ capacity_per_robot = ceil(tasks / 100)
 all 100 physical robots vote
 ```
 
-Task counts above 100 represent an allocation batch across the fixed fleet. They must not be described as one robot physically executing all assigned tasks simultaneously.
+Task counts above 100 are allocation batches, not claims of simultaneous physical execution.
 
 ### Canonical methods
 
 ```text
 Hungarian Oracle                full-information minimum-cost reference
-Voting Sequential Greedy
-Voting Global Greedy
-Voting Static Regret-2 Greedy
-Voting Hungarian
+Voting Greedy                   sequential capacitated Greedy baseline
+Voting Hungarian                exact receiver-local assignment
+Voting Min-Cost Flow            capacity-native network optimization
+Voting Sinkhorn + Rounding      entropic transport approximation + explicit rounding
 ```
 
-The three fast heuristics operate directly on physical receiver-local `100 x T` cost matrices and explicit robot capacity.
+The Oracle remains in CSV output but is not plotted as a redundant zero-error curve. The primary Experiment 2 figure therefore normally has four optimizer curves.
 
-Voting Hungarian uses the existing Hungarian assignment owner after capacity-slot expansion of each receiver-local incomplete view.
+Global Greedy and Static Regret-2 Greedy remain implemented for supporting studies but are no longer canonical report curves. Auction, MILP, and ACO also remain implemented outside this canonical lossy workload sweep.
 
-MILP, ACO + Local Search, and Auction are no longer part of the report-facing lossy workload sweep. Their implementations remain in their existing owners/supporting studies. This is a deliberate runtime/research-scope decision, not deletion of those optimizer implementations.
+### Optimizer ownership
 
-### Why this method set is canonical
+Greedy:
 
-The earlier all-five-family design took about `85.44 s` on macOS for only `T=1000`, one trial, and one voter, showing that receiver-local MILP/ACO could not reasonably satisfy the approximately one-hour rerun budget.
+```text
+run_multitask_workload_heuristics.py::solve_sequential_greedy_capacitated
+```
 
-The first fast redesign retained Voting Auction. Its measured all-voter preview used task points `100, 500, 1000`, two trials per point, and four process workers, and required `193.18 s` wall time. That implied roughly `1 h 47 min` for the ten-point, 20-trial workload if scaling remained similar.
+Hungarian:
 
-Voting Auction is therefore replaced by Voting Hungarian as the one exact local assignment-family comparison. The underlying assignment objective is unchanged; the change targets receiver-local runtime. The Oracle and Voting Hungarian use the same Hungarian algorithm under different information conditions: the Oracle sees the full true cost matrix, while each Voting Hungarian voter sees only its own lossy receiver-local cost view before Voting aggregation.
+```text
+run_multitask_peer_cost_experiment.py::solve_hungarian_assignment
+```
+
+Min-Cost Flow and Sinkhorn:
+
+```text
+run_multitask_workload_optimizers.py
+```
+
+Important new boundaries:
+
+```text
+solve_min_cost_flow_capacitated
+quantize_min_cost_flow_costs
+compute_sinkhorn_transport_plan
+round_sinkhorn_plan_to_capacity
+solve_sinkhorn_capacitated
+```
+
+### Min-Cost Flow contract
+
+The receiver-local network is:
+
+```text
+source -> robots -> tasks -> sink
+```
+
+Robot capacity is native to the network and does not use slot duplication.
+
+OR-Tools `SimpleMinCostFlow` requires integer arc costs, so float costs are multiplied by `1_000_000` and rounded. Evaluation still uses the original float costs. Complete-information preflight must match the float Hungarian Oracle within `0.01%`.
+
+The dependency is declared in `requirements.txt` as `ortools>=9.10,<10`.
+
+### Sinkhorn contract
+
+Canonical configuration:
+
+```text
+epsilon = 0.08
+max_iterations = 30
+tolerance = 1e-5
+```
+
+Sinkhorn produces a soft transport plan on the physical receiver-local cost matrix. A separate named rounding function converts that plan into a discrete capacity-feasible proposal. Sinkhorn is not described as an exact discrete solver.
 
 ### Primary report metric
-
-The one-page paper should primarily plot direct cost error relative to the full-information capacitated minimum:
 
 ```text
 Cost error (%) = 100 * (method_cost - oracle_cost) / oracle_cost
 ```
 
-Lower is better. The Oracle remains in CSV data but is not plotted as a redundant `0%` curve.
-
-The code/CSV field is:
+Lower is better. The CSV field is:
 
 ```text
 average_optimality_gap_percent
 ```
 
-The `<=5%` rate is supporting only.
+The `<=5%` rate remains supporting only.
 
-Exactly identical plotted method series may share one legend entry; numerically different series remain separate.
-
-### Figure curve count
-
-The primary Experiment 2 cost-error figure normally contains **four curves**:
-
-```text
-Voting Sequential Greedy
-Voting Global Greedy
-Voting Static Regret-2 Greedy
-Voting Hungarian
-```
-
-`Hungarian Oracle` supplies the minimum-cost denominator and `0%` reference but is not drawn as a fifth curve.
+Exactly identical measured curves may share one legend entry; near-overlapping curves remain separate.
 
 ### Canonical x-axis
 
@@ -126,40 +141,28 @@ Voting Hungarian
 Task batch size (100 robots fixed)
 ```
 
-The ten points are:
+Points:
 
 ```text
 100 200 300 400 500 600 700 800 900 1000
 ```
 
-### Capacity contract
+### Pairing and communication contract
 
-For task count `T`:
-
-```text
-K = ceil(T / 100)
-```
-
-Each physical robot may receive at most `K` tasks from the allocation batch.
-
-The Oracle, every receiver-local heuristic, Voting Hungarian, evaluation, and final support consensus all enforce the same physical capacity contract.
-
-### Communication and pairing contract
-
-All Voting methods share the same:
+All four Voting methods share the same:
 
 - physical `100 x T` true cost matrix;
 - physical voter identities;
-- packet-loss realization;
+- directed packet-loss realization;
 - task order;
 - tie-priority matrix;
 - capacity value.
 
-Parallel process scheduling never enters a random seed formula.
+Missing receiver-local edges remain `+inf`. No optimizer regenerates communication loss.
 
 ### Runtime contract
 
-Independent `(task_count, trial)` jobs are parallelized with `ProcessPoolExecutor`.
+Independent `(task_count, trial)` jobs use `ProcessPoolExecutor`.
 
 Canonical default:
 
@@ -168,53 +171,39 @@ workers = min(4, available CPU count)
 receiver batch size = 4
 ```
 
-Worker count and receiver batch size are runtime controls only. They must not change the paired experiment semantics.
-
-Parallel mode suppresses receiver-level worker output and reports trial completions from the parent process. When workers exceed one, BLAS/OpenMP thread-count environment variables default to one thread unless the user explicitly set them, avoiding nested thread oversubscription.
+Worker count and receiver batch size are runtime-only controls and must not change deterministic experiment results.
 
 ### Zero-loss gates
 
 Before the lossy sweep:
 
-- all three heuristics must return valid capacity-feasible complete-information proposals at bounded loads up to 200 tasks;
-- Voting Hungarian must match the capacitated Hungarian Oracle cost at bounded loads up to 200 tasks under the existing exact numerical tolerance.
+- Greedy must return a valid capacity-feasible proposal;
+- Voting Hungarian must match the capacitated Hungarian Oracle;
+- Min-Cost Flow must match the float Oracle within its explicit quantization tolerance;
+- Sinkhorn + Rounding must return a valid capacity-feasible proposal.
 
-Heuristics are not required to equal the Oracle.
+These checks are bounded to at most 200 tasks per family.
 
-### Authoritative output root
+### Dependencies and real-machine run sequence
 
-```text
-results/multitask_peer_cost_fixed100_workload/
+After pulling:
+
+```bash
+git pull
+pip install -r requirements.txt
 ```
 
-Primary raw/summary files:
+Small smoke:
 
-```text
-workload_comparison_raw.csv
-workload_comparison_summary.csv
+```bash
+time python run_multitask_peer_cost_all_optimizers.py \
+  --tasks 100 500 1000 \
+  --trials 1 \
+  --max-voters 5 \
+  --workers 1
 ```
 
-Primary figure:
-
-```text
-average_optimality_gap_percent.png
-```
-
-Raw/summary files must retain:
-
-```text
-robots
-voters
-tasks
-capacity_per_robot
-assignment_slots
-method
-method_label
-```
-
-### Real-machine timing sequence
-
-After pulling the exact-solver swap, first run an all-voter parallel preview:
+All-voter timing preview:
 
 ```bash
 time python run_multitask_peer_cost_all_optimizers.py \
@@ -223,15 +212,37 @@ time python run_multitask_peer_cost_all_optimizers.py \
   --workers 4
 ```
 
-The canonical Experiment 2 command remains:
+Canonical Experiment 2:
 
 ```bash
 time python run_multitask_peer_cost_all_optimizers.py
 ```
 
-That command uses ten task points, 20 trials per point, all 100 voters, the four report-facing Voting methods, and up to four process workers.
+No-argument meaning:
 
-The one-hour runtime is an objective that must be re-measured after the Auction-to-Hungarian swap; it is not guaranteed by specification alone.
+```text
+100 robots
+100..1000 tasks by 100
+20 trials per point
+100 voters
+30% packet loss
+Voting Greedy
+Voting Hungarian
+Voting Min-Cost Flow
+Voting Sinkhorn + Rounding
+Hungarian Oracle reference
+up to 4 workers
+```
+
+The one-hour runtime is a target to be verified on the user's Mac, not a guaranteed property.
+
+### Authoritative outputs
+
+```text
+results/multitask_peer_cost_fixed100_workload/data/workload_comparison_raw.csv
+results/multitask_peer_cost_fixed100_workload/data/workload_comparison_summary.csv
+results/multitask_peer_cost_fixed100_workload/figures/average_optimality_gap_percent.png
+```
 
 ## Experiment 3 - Direct vs Voting ablation
 
@@ -241,34 +252,30 @@ Owner:
 run_multitask_voting_ablation.py
 ```
 
-This experiment remains supporting causal evidence. The user has decided not to include it in the current one-page CACS paper, so it is not required for the current one-page rerun cycle.
-
-Its historical fixed-100 capacity-one results must not be mixed into the new Experiment 2 workload curve.
+This remains supporting causal evidence and is not required for the current one-page CACS paper.
 
 ## Report data acceptance checklist
 
-Before any dataset is called formal report data, confirm:
+Before calling a dataset formal report data, confirm:
 
-1. Experiment 1 uses the completed canonical 100-trial dataset;
-2. Experiment 2 uses exactly `100` physical robots at every task load;
-3. Experiment 2 task batches are exactly `100..1000` in steps of `100`;
-4. Experiment 2 has `20` completed trials per task point unless a later canonical revision explicitly changes this;
-5. formal Experiment 2 uses all `100` physical robots as voters;
-6. `capacity_per_robot = ceil(tasks/100)` is recorded and enforced by all methods and consensus;
-7. paired scenario/communication inputs are shared by all four Voting methods;
-8. parallel worker scheduling does not change seeds or results;
-9. bounded heuristic feasibility and Voting Hungarian exactness gates pass;
-10. all final report CSVs were generated by the final code version;
-11. the main Experiment 2 figure uses direct cost error from the minimum;
-12. calculations use raw CSV values even when presentation values are rounded;
-13. task counts above 100 are described as allocation workload/batches;
-14. MILP/ACO/Auction claims come only from their separate supporting data, not from the new canonical lossy workload curve.
+1. Experiment 1 uses its completed canonical 100-trial dataset;
+2. Experiment 2 uses exactly 100 physical robots at every load;
+3. task batches are `100..1000` in steps of `100`;
+4. Experiment 2 has 20 completed trials per task point unless a later canonical revision changes it;
+5. all 100 robots vote in formal Experiment 2;
+6. `capacity_per_robot = ceil(tasks/100)` is enforced by all methods and final consensus;
+7. the four Voting methods share paired scenario/communication inputs;
+8. Min-Cost Flow reports use original float assignment costs even though its internal network costs are integer-scaled;
+9. Sinkhorn is described as an approximation with explicit discrete rounding;
+10. all zero-loss integration gates pass;
+11. all final CSVs come from the final code version;
+12. the main figure uses direct cost error from the minimum;
+13. task counts above 100 are described as workload batches;
+14. the final paper cites method-appropriate references for Hungarian, Min-Cost Flow, and Sinkhorn.
 
 ## Current one-page report structure
 
-The CACS one-page paper should tell two main stories:
+The paper should tell two main stories:
 
 1. **Single-task communication robustness** - how packet loss and fleet size affect majority execution success.
-2. **Fixed-fleet workload scaling** - with 100 robots held constant, how Voting assignment cost error changes as the task batch grows from 100 to 1000 using scalable local decision rules.
-
-For the paper bibliography, retain the Hungarian assignment reference. It supports both the full-information Hungarian Oracle and Voting Hungarian, which differ in available information and Voting aggregation rather than in the underlying assignment algorithm. The three greedy baselines are explicitly defined by the experiment and should not be given unrelated optimizer references merely to fill the bibliography.
+2. **Fixed-fleet workload scaling** - how Voting assignment cost error changes from 100 to 1000 tasks with 100 robots using four computationally distinct local optimization methods.
