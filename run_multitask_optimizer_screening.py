@@ -38,6 +38,7 @@ ROOT = Path(__file__).resolve().parent
 RESULT_DIR = ROOT / "results" / "multitask_optimizer_screening"
 DATA_DIR = RESULT_DIR / "data"
 FIGURE_DIR = RESULT_DIR / "figures"
+MILP_NUMERICAL_TOLERANCE_PERCENT = 1e-6
 
 
 @dataclass(frozen=True)
@@ -108,6 +109,15 @@ def validate_aco_config(config: ACOConfig) -> None:
         )
 
 
+def cost_match_tolerance_percent(method: str) -> float:
+    """Return the numerical objective-match tolerance owned by each solver family."""
+    if method == "milp":
+        return MILP_NUMERICAL_TOLERANCE_PERCENT
+    if method in METHODS:
+        return OPTIMAL_COST_TOLERANCE_PERCENT
+    fail("cost_match_tolerance_percent", "contract", "UNKNOWN_METHOD", f"method={method}")
+
+
 @lru_cache(maxsize=None)
 def build_milp_assignment_model(
     robot_count: int,
@@ -163,7 +173,7 @@ def solve_milp_assignment(costs: np.ndarray) -> np.ndarray | None:
         integrality=integrality,
         bounds=bounds,
         constraints=constraint,
-        options={"presolve": True},
+        options={"presolve": True, "mip_rel_gap": 0.0},
     )
     if not result.success or result.x is None:
         return None
@@ -384,7 +394,7 @@ def evaluate_method(
         "total_cost": total_cost,
         "optimal_total_cost": optimal_cost,
         "optimality_gap_percent": gap_percent,
-        "optimal_cost_match": abs(gap_percent) <= OPTIMAL_COST_TOLERANCE_PERCENT,
+        "optimal_cost_match": abs(gap_percent) <= cost_match_tolerance_percent(method),
         "near_optimal_5pct": gap_percent <= NEAR_OPTIMAL_GAP_PERCENT + 1e-12,
         "exact_optimal_assignment": bool(np.array_equal(assignment, optimal_assignment)),
         "runtime_ms": runtime_ms,
@@ -408,12 +418,15 @@ def validate_exact_optimizer_contract(seed: int) -> None:
         hungarian_cost = assignment_total_cost(costs, hungarian)
         milp_cost = assignment_total_cost(costs, milp_assignment)
         gap_percent = 100.0 * (milp_cost - hungarian_cost) / hungarian_cost
-        if abs(gap_percent) > OPTIMAL_COST_TOLERANCE_PERCENT:
+        if abs(gap_percent) > MILP_NUMERICAL_TOLERANCE_PERCENT:
             fail(
                 "validate_exact_optimizer_contract",
                 "planning",
                 "MILP_NOT_HUNGARIAN_EXACT",
-                f"tasks={task_count} gap_percent={gap_percent}",
+                (
+                    f"tasks={task_count} expected_abs_gap_percent<="
+                    f"{MILP_NUMERICAL_TOLERANCE_PERCENT} actual={gap_percent}"
+                ),
             )
 
 
@@ -457,12 +470,15 @@ def run_trial(
         fail("run_trial", "planning", "MILP_INFEASIBLE", f"tasks={task_count} trial={trial}")
     milp_cost = assignment_total_cost(costs, milp_assignment)
     milp_gap = 100.0 * (milp_cost - optimal_cost) / optimal_cost
-    if abs(milp_gap) > OPTIMAL_COST_TOLERANCE_PERCENT:
+    if abs(milp_gap) > MILP_NUMERICAL_TOLERANCE_PERCENT:
         fail(
             "run_trial",
             "planning",
             "MILP_NOT_EXACT",
-            f"tasks={task_count} trial={trial} gap_percent={milp_gap}",
+            (
+                f"tasks={task_count} trial={trial} expected_abs_gap_percent<="
+                f"{MILP_NUMERICAL_TOLERANCE_PERCENT} actual={milp_gap}"
+            ),
         )
     records.append(
         evaluate_method(
