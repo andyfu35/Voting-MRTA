@@ -29,15 +29,15 @@ FIXED_ROBOT_COUNT = 100
 WORKLOAD_TASK_COUNTS = tuple(range(100, 1001, 100))
 MAX_TASK_COUNT = 1000
 FORMAL_TRIALS = 20
-AUCTION_METHOD = "p2p_auction"
-DEFAULT_VOTING_METHODS = (*CAPACITATED_HEURISTIC_METHODS, AUCTION_METHOD)
+HUNGARIAN_METHOD = "p2p_hungarian"
+DEFAULT_VOTING_METHODS = (*CAPACITATED_HEURISTIC_METHODS, HUNGARIAN_METHOD)
 REPORT_METHOD_ORDER = ("oracle",) + DEFAULT_VOTING_METHODS
 METHOD_LABELS = {
     "oracle": "Hungarian Oracle",
     "p2p_sequential_greedy": "Voting Sequential Greedy",
     "p2p_global_greedy": "Voting Global Greedy",
     "p2p_regret2_greedy": "Voting Static Regret-2 Greedy",
-    "p2p_auction": "Voting Auction",
+    "p2p_hungarian": "Voting Hungarian",
 }
 DEFAULT_VOTER_BATCH_SIZE = 4
 DEFAULT_PROGRESS_EVERY_VOTERS = 25
@@ -45,7 +45,7 @@ DEFAULT_PARALLEL_WORKERS = max(1, min(4, os.cpu_count() or 1))
 VOTER_SELECTION_SEED_OFFSET = 2_000_003
 VISIBILITY_SEED_OFFSET = 4_000_007
 HEURISTIC_ZERO_LOSS_CHECK_MAX_TASKS = 200
-AUCTION_ZERO_LOSS_CHECK_MAX_TASKS = 200
+HUNGARIAN_ZERO_LOSS_CHECK_MAX_TASKS = 200
 
 ROOT = Path(__file__).resolve().parent
 RESULT_DIR = ROOT / "results" / "multitask_peer_cost_fixed100_workload"
@@ -185,7 +185,7 @@ def build_capacity_slot_cost_views(
     receiver_costs: np.ndarray,
     capacity_per_robot: int,
 ) -> np.ndarray:
-    """Expand receiver-local physical robot rows only for the capacity-one Auction owner."""
+    """Expand receiver-local physical robot rows for the capacity-one exact local owner."""
     if receiver_costs.ndim != 3:
         fail(
             "build_capacity_slot_cost_views",
@@ -393,7 +393,7 @@ def solve_voter_batch_proposals(
     task_order: np.ndarray,
     capacity_per_robot: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Route local physical views to fast heuristics or the existing Auction owner."""
+    """Route local physical views to fast heuristics or the existing Hungarian owner."""
     if method in CAPACITATED_HEURISTIC_METHODS:
         return solve_capacitated_heuristic_batch(
             method=method,
@@ -401,13 +401,13 @@ def solve_voter_batch_proposals(
             task_order=task_order,
             capacity_per_robot=capacity_per_robot,
         )
-    if method == AUCTION_METHOD:
+    if method == HUNGARIAN_METHOD:
         slot_receiver_costs = build_capacity_slot_cost_views(
             receiver_costs,
             capacity_per_robot,
         )
         slot_proposals, valid = solve_local_optimizer_proposals(
-            "p2p_auction",
+            HUNGARIAN_METHOD,
             slot_receiver_costs,
             task_order,
         )
@@ -664,12 +664,12 @@ def validate_zero_loss_heuristic_contracts(seed: int, max_task_count: int) -> No
             )
 
 
-def validate_zero_loss_auction_contract(seed: int, max_task_count: int) -> None:
-    """Require Voting Auction to match the capacitated Hungarian reference with complete data."""
+def validate_zero_loss_hungarian_contract(seed: int, max_task_count: int) -> None:
+    """Require Voting Hungarian to match the capacitated Hungarian reference with complete data."""
     check_tasks = sorted(
         {
             min(100, max_task_count),
-            min(AUCTION_ZERO_LOSS_CHECK_MAX_TASKS, max_task_count),
+            min(HUNGARIAN_ZERO_LOSS_CHECK_MAX_TASKS, max_task_count),
         }
     )
     for task_count in check_tasks:
@@ -683,14 +683,14 @@ def validate_zero_loss_auction_contract(seed: int, max_task_count: int) -> None:
         oracle = solve_capacity_oracle(costs, capacity_per_robot)
         if oracle is None:
             fail(
-                "validate_zero_loss_auction_contract",
+                "validate_zero_loss_hungarian_contract",
                 "planning",
                 "ORACLE_INFEASIBLE",
                 f"tasks={task_count} capacity={capacity_per_robot}",
             )
         oracle_cost = assignment_total_cost_with_capacity(costs, oracle, capacity_per_robot)
         assignment, valid_rate = solve_zero_loss_consensus(
-            method=AUCTION_METHOD,
+            method=HUNGARIAN_METHOD,
             costs=costs,
             capacity_per_robot=capacity_per_robot,
             task_order=task_order,
@@ -698,7 +698,7 @@ def validate_zero_loss_auction_contract(seed: int, max_task_count: int) -> None:
         )
         if valid_rate != 100.0:
             fail(
-                "validate_zero_loss_auction_contract",
+                "validate_zero_loss_hungarian_contract",
                 "planning",
                 "ZERO_LOSS_PROPOSAL_FAILURE",
                 f"tasks={task_count} valid_rate={valid_rate}",
@@ -707,17 +707,17 @@ def validate_zero_loss_auction_contract(seed: int, max_task_count: int) -> None:
         gap_percent = 100.0 * (actual_cost - oracle_cost) / oracle_cost
         if abs(gap_percent) > OPTIMAL_COST_TOLERANCE_PERCENT:
             fail(
-                "validate_zero_loss_auction_contract",
+                "validate_zero_loss_hungarian_contract",
                 "planning",
                 "ZERO_LOSS_NOT_ORACLE_CONSISTENT",
-                f"method={AUCTION_METHOD} tasks={task_count} actual_gap_percent={gap_percent}",
+                f"method={HUNGARIAN_METHOD} tasks={task_count} actual_gap_percent={gap_percent}",
             )
 
 
 def validate_zero_loss_optimizer_contract(seed: int, max_task_count: int) -> None:
-    """Run bounded integration gates for the canonical heuristic and Auction families."""
+    """Run bounded integration gates for the canonical heuristic and Hungarian families."""
     validate_zero_loss_heuristic_contracts(seed, max_task_count)
-    validate_zero_loss_auction_contract(seed, max_task_count)
+    validate_zero_loss_hungarian_contract(seed, max_task_count)
 
 
 def evaluate_assignment(
@@ -1022,7 +1022,7 @@ def run_experiment(
     voting_methods = resolve_voting_methods()
     validate_zero_loss_optimizer_contract(seed, max(task_counts))
 
-    print("Zero-loss optimizer contract: PASS (fast heuristics feasible; Auction exact at bounded checks)")
+    print("Zero-loss optimizer contract: PASS (fast heuristics feasible; Voting Hungarian exact at bounded checks)")
     print(
         "Experiment 2 workload: robots=100 fixed; "
         "capacity_per_robot=ceil(tasks/100); tasks are batch workload"
@@ -1175,7 +1175,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Run the time-budgeted lossy P2P Voting workload experiment with 100 fixed robots, "
-            "100..1000 tasks, fast heuristic local solvers, Voting Auction, and parallel trials."
+            "100..1000 tasks, fast heuristic local solvers, Voting Hungarian, and parallel trials."
         )
     )
     parser.add_argument(
