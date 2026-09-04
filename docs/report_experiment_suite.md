@@ -5,7 +5,7 @@ This file defines which experiments must be rerun before report writing and whic
 ## Global report rules
 
 - Use seed `20260903` unless a canonical experiment states otherwise.
-- Use the experiment-specific canonical trial count. Experiment 1 remains 100 trials; Experiment 2 is now 20 trials per task point because its runtime contract was explicitly revised.
+- Use the experiment-specific canonical trial count. Experiment 1 remains 100 trials; Experiment 2 is 20 trials per task point because its runtime contract was explicitly revised.
 - Smoke/trend runs using fewer trials or a sampled voter cap are preview data only and must not be mixed into formal report tables.
 - Within one comparison, all enabled algorithms must use paired scenarios: the same physical robot/task realization, voter identities, packet-loss realization, task order, tie priority, and capacity contract.
 - Robust Optimization and multi-objective success/time/energy cost models remain excluded from this report cycle.
@@ -70,20 +70,22 @@ Hungarian Oracle                full-information minimum-cost reference
 Voting Sequential Greedy
 Voting Global Greedy
 Voting Static Regret-2 Greedy
-Voting Auction
+Voting Hungarian
 ```
 
 The three fast heuristics operate directly on physical receiver-local `100 x T` cost matrices and explicit robot capacity.
 
-Voting Auction continues to use the existing capacity-one Auction owner after capacity-slot expansion.
+Voting Hungarian uses the existing Hungarian assignment owner after capacity-slot expansion of each receiver-local incomplete view.
 
-Receiver-local Hungarian, MILP, and ACO + Local Search are no longer part of the report-facing lossy workload sweep. MILP and ACO remain available in the separate complete-information optimizer screening. This is a deliberate runtime/research-scope decision, not deletion of those optimizer implementations.
+MILP, ACO + Local Search, and Auction are no longer part of the report-facing lossy workload sweep. Their implementations remain in their existing owners/supporting studies. This is a deliberate runtime/research-scope decision, not deletion of those optimizer implementations.
 
 ### Why this method set is canonical
 
-The preceding all-five-family design took about `85.44 s` on macOS for only `T=1000`, one trial, and one voter. Its receiver-local MILP/ACO cost could not reasonably satisfy the user's approximately one-hour rerun budget.
+The earlier all-five-family design took about `85.44 s` on macOS for only `T=1000`, one trial, and one voter, showing that receiver-local MILP/ACO could not reasonably satisfy the approximately one-hour rerun budget.
 
-The new Experiment 2 therefore focuses the report question on communication loss + Voting aggregation while keeping one exact local assignment family, Auction, and three computationally distinct greedy baselines.
+The first fast redesign retained Voting Auction. Its measured all-voter preview used task points `100, 500, 1000`, two trials per point, and four process workers, and required `193.18 s` wall time. That implied roughly `1 h 47 min` for the ten-point, 20-trial workload if scaling remained similar.
+
+Voting Auction is therefore replaced by Voting Hungarian as the one exact local assignment-family comparison. The underlying assignment objective is unchanged; the change targets receiver-local runtime. The Oracle and Voting Hungarian use the same Hungarian algorithm under different information conditions: the Oracle sees the full true cost matrix, while each Voting Hungarian voter sees only its own lossy receiver-local cost view before Voting aggregation.
 
 ### Primary report metric
 
@@ -93,7 +95,7 @@ The one-page paper should primarily plot direct cost error relative to the full-
 Cost error (%) = 100 * (method_cost - oracle_cost) / oracle_cost
 ```
 
-Lower is better. The Oracle remains in CSV data but need not be plotted as a redundant `0%` curve.
+Lower is better. The Oracle remains in CSV data but is not plotted as a redundant `0%` curve.
 
 The code/CSV field is:
 
@@ -104,6 +106,19 @@ average_optimality_gap_percent
 The `<=5%` rate is supporting only.
 
 Exactly identical plotted method series may share one legend entry; numerically different series remain separate.
+
+### Figure curve count
+
+The primary Experiment 2 cost-error figure normally contains **four curves**:
+
+```text
+Voting Sequential Greedy
+Voting Global Greedy
+Voting Static Regret-2 Greedy
+Voting Hungarian
+```
+
+`Hungarian Oracle` supplies the minimum-cost denominator and `0%` reference but is not drawn as a fifth curve.
 
 ### Canonical x-axis
 
@@ -127,7 +142,7 @@ K = ceil(T / 100)
 
 Each physical robot may receive at most `K` tasks from the allocation batch.
 
-The Oracle, every receiver-local heuristic, Voting Auction, evaluation, and final support consensus all enforce the same physical capacity contract.
+The Oracle, every receiver-local heuristic, Voting Hungarian, evaluation, and final support consensus all enforce the same physical capacity contract.
 
 ### Communication and pairing contract
 
@@ -162,7 +177,7 @@ Parallel mode suppresses receiver-level worker output and reports trial completi
 Before the lossy sweep:
 
 - all three heuristics must return valid capacity-feasible complete-information proposals at bounded loads up to 200 tasks;
-- Voting Auction must match the capacitated Hungarian Oracle cost at bounded loads up to 200 tasks under the existing exact numerical tolerance.
+- Voting Hungarian must match the capacitated Hungarian Oracle cost at bounded loads up to 200 tasks under the existing exact numerical tolerance.
 
 Heuristics are not required to equal the Oracle.
 
@@ -199,17 +214,7 @@ method_label
 
 ### Real-machine timing sequence
 
-After pulling the new code, first run:
-
-```bash
-time python run_multitask_peer_cost_all_optimizers.py \
-  --tasks 100 500 1000 \
-  --trials 1 \
-  --max-voters 5 \
-  --workers 1
-```
-
-Then run an all-voter parallel preview:
+After pulling the exact-solver swap, first run an all-voter parallel preview:
 
 ```bash
 time python run_multitask_peer_cost_all_optimizers.py \
@@ -218,7 +223,7 @@ time python run_multitask_peer_cost_all_optimizers.py \
   --workers 4
 ```
 
-The canonical Experiment 2 command is now simply:
+The canonical Experiment 2 command remains:
 
 ```bash
 time python run_multitask_peer_cost_all_optimizers.py
@@ -226,7 +231,7 @@ time python run_multitask_peer_cost_all_optimizers.py
 
 That command uses ten task points, 20 trials per point, all 100 voters, the four report-facing Voting methods, and up to four process workers.
 
-The one-hour runtime is an objective that still requires measurement on the user's Mac; it is not guaranteed by specification alone.
+The one-hour runtime is an objective that must be re-measured after the Auction-to-Hungarian swap; it is not guaranteed by specification alone.
 
 ## Experiment 3 - Direct vs Voting ablation
 
@@ -252,12 +257,12 @@ Before any dataset is called formal report data, confirm:
 6. `capacity_per_robot = ceil(tasks/100)` is recorded and enforced by all methods and consensus;
 7. paired scenario/communication inputs are shared by all four Voting methods;
 8. parallel worker scheduling does not change seeds or results;
-9. bounded heuristic feasibility and Auction exactness gates pass;
+9. bounded heuristic feasibility and Voting Hungarian exactness gates pass;
 10. all final report CSVs were generated by the final code version;
 11. the main Experiment 2 figure uses direct cost error from the minimum;
 12. calculations use raw CSV values even when presentation values are rounded;
 13. task counts above 100 are described as allocation workload/batches;
-14. MILP/ACO claims come only from their separate screening data, not from the new lossy workload curve.
+14. MILP/ACO/Auction claims come only from their separate supporting data, not from the new canonical lossy workload curve.
 
 ## Current one-page report structure
 
@@ -266,4 +271,4 @@ The CACS one-page paper should tell two main stories:
 1. **Single-task communication robustness** - how packet loss and fleet size affect majority execution success.
 2. **Fixed-fleet workload scaling** - with 100 robots held constant, how Voting assignment cost error changes as the task batch grows from 100 to 1000 using scalable local decision rules.
 
-For the paper bibliography, retain the Hungarian assignment reference for the Oracle and the Bertsekas Auction reference for Voting Auction. The three greedy baselines are explicitly defined by the experiment and should not be given unrelated optimizer references merely to fill the bibliography.
+For the paper bibliography, retain the Hungarian assignment reference. It supports both the full-information Hungarian Oracle and Voting Hungarian, which differ in available information and Voting aggregation rather than in the underlying assignment algorithm. The three greedy baselines are explicitly defined by the experiment and should not be given unrelated optimizer references merely to fill the bibliography.
